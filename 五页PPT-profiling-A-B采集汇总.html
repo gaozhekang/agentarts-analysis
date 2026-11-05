@@ -1,0 +1,532 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>五页 PPT 生成任务 · A/B Profiling 采集汇总</title>
+<style>
+  :root {
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1f2933; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --accent-soft:#eff6ff; --ok:#16a34a; --ok-soft:#f0fdf4;
+    --warn:#d97706; --warn-soft:#fffbeb; --bad:#dc2626; --bad-soft:#fef2f2;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); line-height:1.65; padding:32px 20px 60px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:1120px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:-0.3px; }
+  .subtitle { color:var(--muted); font-size:14px; margin:0 0 28px; }
+  h2 { font-size:19px; margin:36px 0 14px; padding-left:10px; border-left:4px solid var(--accent); }
+  h3 { font-size:15px; margin:22px 0 10px; color:#374151; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 22px; margin-bottom:14px;
+    box-shadow:0 1px 2px rgba(16,24,40,.04); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:#f9fafb; font-weight:600; color:#374151; white-space:nowrap; }
+  tr:last-child td { border-bottom:none; }
+  .mono { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; font-size:12px; word-break:break-all; }
+  .pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .ok { background:var(--ok-soft); color:var(--ok); }
+  .fail { background:var(--bad-soft); color:var(--bad); }
+  .warn { background:var(--warn-soft); color:var(--warn); }
+  .off { background:#f3f4f6; color:#6b7280; }
+  .note { font-size:13px; color:var(--muted); }
+  .kbox { border:1px dashed var(--line); border-radius:8px; padding:12px 14px; margin-bottom:10px; background:#fbfcfd; }
+  pre { background:#0f172a; color:#e2e8f0; padding:12px 14px; border-radius:6px; font-size:12px; overflow:auto; line-height:1.5; }
+  ul { margin:6px 0; padding-left:20px; } li { margin:3px 0; }
+  summary { cursor:pointer; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:820px){ .grid{grid-template-columns:1fr;} }
+  select { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; font-size:13.5px; color:var(--ink);
+    cursor:pointer; }
+  .toolbar { display:flex; gap:18px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .toolbar label { font-size:13.5px; color:#374151; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>五页 PPT 生成任务 · A/B Profiling 采集汇总</h1>
+<p class="subtitle">数据包：<span class="mono">ARIES-five-page-PPT-profiling-huawei-AB-20261104.tar.gz</span>（14.05 MB，445 文件，解压 226.4 MB）· 生成时间 2026-11-04</p>
+
+<div class="card">
+  <p style="margin:0;">
+    本轮真实华为沙箱 <b>A/B 五页 PPT 任务</b>均通过独立评分（<b>score=1</b>），三域六工具采集、启动覆盖、原件完整性与原生 perf 回读全部通过。
+    任务文字：<span class="mono">幻灯片 生成一份关于大模型发展的pptx材料，写5页。</span>
+    与早期三个 profiling 包不同，本包<b>保留了全部完整命令文本</b>（A 32 条、B 39 条），可直接看到 PPT 生成的真实执行轨迹。
+  </p>
+  <p class="note" style="margin:8px 0 0;">
+    本包只做原始采集与命令索引，<b>不生成热点、CPU 归因结论、火焰图或 Console 页面</b>；A/B 各用自己的成功 Tape（zero timing/workload replay），两组耗时不可直接比较 placement 优劣。
+  </p>
+</div>
+
+<h2>一、部署视图：A 分体式 vs B 一体式</h2>
+<div class="card">
+  <p style="margin:0;">
+    A 采用<b>分体式部署（external placement，external_harness=true）</b>：Harness 在沙箱外的 ECS Docker 容器，Worker 在华为沙箱内，二者经远程 bridge 通信；
+    B 采用<b>一体式部署（embedded placement，external_harness=false）</b>：Harness 直接嵌入沙箱内，与 Tool 同域运行。
+  </p>
+  <pre>A（分体式部署 / external placement）              B（一体式部署 / embedded placement）
+┌────────────────────────┐  bridge   ┌──────────────────────────┐      ┌──────────────────────────┐
+│ ECS 容器 (外置 Harness)  │ ════════► │ 华为沙箱 guest             │      │ 华为沙箱 guest             │
+│   ecs-harness  PID 21   │ ◄════════ │   sandbox-worker PID 177  │      │   sandbox-harness PID 184 │
+│   (模型调度/Agent运行时) │  remote   │   (业务 Tool 命令在此执行) │      │   (Harness + Tool 一体)   │
+└────────────────────────┘           └──────────────────────────┘      └──────────────────────────┘</pre>
+  <table>
+    <thead><tr><th>维度</th><th>A（分体式）</th><th>B（一体式）</th></tr></thead>
+    <tbody>
+      <tr><td>external_harness</td><td class="mono">true</td><td class="mono">false</td></tr>
+      <tr><td>执行域</td><td>ecs（Harness）+ sandbox（Worker）</td><td>sandbox（Harness + Tool）</td></tr>
+      <tr><td>命令账本域</td><td>sandbox-worker（32 条）</td><td>sandbox-harness（39 条）</td></tr>
+      <tr><td>identity 桥接</td><td>有 <span class="mono">identity/bridge/</span>（远程桥接）</td><td>无 bridge（harness 内嵌）</td></tr>
+      <tr><td>Sandbox ID</td><td class="mono">490a3f1f…</td><td class="mono">40f5cb8b…</td></tr>
+      <tr><td>Run ID</td><td class="mono">20261104T081703-…-a</td><td class="mono">20261104T082034-…-b</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>二、三个执行域采集矩阵</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>采集域</th><th>实际对象</th><th>placement</th><th>target_role</th><th>target_pid</th><th>命令账本</th><th>perf.data</th><th>perf.script</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">A/ecs-harness</td><td>ECS 外置 Harness</td><td>external</td><td>harness</td><td>21</td><td><span class="pill off">runtime_context_only</span></td><td class="mono">10.8 MB</td><td class="mono">107.5 MB</td></tr>
+      <tr><td class="mono">A/sandbox-worker</td><td>沙箱 Worker + Tool</td><td>external</td><td>worker</td><td>177</td><td><span class="pill ok">32 条 complete</span></td><td class="mono">1.0 MB</td><td class="mono">3.8 MB</td></tr>
+      <tr><td class="mono">B/sandbox-harness</td><td>沙箱内 Harness + Tool</td><td>embedded</td><td>harness</td><td>184</td><td><span class="pill ok">39 条 complete</span></td><td class="mono">6.6 MB</td><td class="mono">59.7 MB</td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">
+    三域各六工具（perf/vmstat/iostat/mpstat/sar/pidstat）均 <span class="pill ok">completed</span>、
+    <span class="mono">initialization_covered=true</span>、native ready 早于同 PID exec，各有 Python perf map。
+    A 的 Tool 命令属于 Worker 域，ecs-harness 域不复制归属（故无本地命令账本）。
+  </p>
+</div>
+
+<h2>三、命令索引统计（本包核心）</h2>
+<div class="grid">
+  <div class="card">
+    <h3 style="margin-top:0;">A · sandbox-worker（分体式）</h3>
+    <ul>
+      <li>命令总数：<b>32</b> 条（成功 <span class="pill ok">29</span> 失败 <span class="pill fail">3</span>）</li>
+      <li>命令墙钟总耗时：<b>11.78 s</b></li>
+      <li>平均 <b>368</b> ms · 最大 <b>1942.9</b> ms</li>
+      <li>perf 关联：<b>32 / 32 matched</b></li>
+    </ul>
+    <h3>类型分布（按总耗时）</h3>
+      <table><thead><tr><th>类型</th><th>次数</th><th>总耗时(s)</th><th>占比</th></tr></thead><tbody>
+  <tr><td>PPT 转换 (soffice)</td><td>3</td><td class='mono'>3.99</td><td>33.9%</td></tr>
+  <tr><td>PPT 生成 (node/pptxgenjs)</td><td>6</td><td class='mono'>3.7</td><td>31.4%</td></tr>
+  <tr><td>PPT 生成/后处理 (python3)</td><td>6</td><td class='mono'>2.11</td><td>17.9%</td></tr>
+  <tr><td>环境探查 (find)</td><td>4</td><td class='mono'>1.55</td><td>13.2%</td></tr>
+  <tr><td>文本输出 (echo)</td><td>2</td><td class='mono'>0.21</td><td>1.7%</td></tr>
+  <tr><td>Python 内联检查</td><td>3</td><td class='mono'>0.12</td><td>1%</td></tr>
+  <tr><td>目录列举 (ls)</td><td>5</td><td class='mono'>0.09</td><td>0.7%</td></tr>
+  <tr><td>内容检查 (grep)</td><td>3</td><td class='mono'>0.01</td><td>0.1%</td></tr>
+  </tbody></table>
+
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0;">B · sandbox-harness（一体式）</h3>
+    <ul>
+      <li>命令总数：<b>39</b> 条（成功 <span class="pill ok">33</span> 失败 <span class="pill fail">6</span>）</li>
+      <li>命令墙钟总耗时：<b>12.1 s</b></li>
+      <li>平均 <b>310.3</b> ms · 最大 <b>2244.47</b> ms</li>
+      <li>perf 关联：<b>38 matched + 1 unknown</b>（第 5 条，见 §六）</li>
+    </ul>
+    <h3>类型分布（按总耗时）</h3>
+      <table><thead><tr><th>类型</th><th>次数</th><th>总耗时(s)</th><th>占比</th></tr></thead><tbody>
+  <tr><td>PPT 生成/后处理 (python3)</td><td>11</td><td class='mono'>4.01</td><td>33.1%</td></tr>
+  <tr><td>PPT 转换 (soffice)</td><td>2</td><td class='mono'>3.29</td><td>27.2%</td></tr>
+  <tr><td>PPT 生成 (node/pptxgenjs)</td><td>6</td><td class='mono'>2.51</td><td>20.8%</td></tr>
+  <tr><td>Python 内联检查</td><td>5</td><td class='mono'>1.07</td><td>8.8%</td></tr>
+  <tr><td>环境探查 (find)</td><td>3</td><td class='mono'>1</td><td>8.2%</td></tr>
+  <tr><td>内容检查 (grep)</td><td>7</td><td class='mono'>0.14</td><td>1.2%</td></tr>
+  <tr><td>PDF 文本提取 (pdftotext)</td><td>2</td><td class='mono'>0.04</td><td>0.4%</td></tr>
+  <tr><td>目录列举 (ls)</td><td>3</td><td class='mono'>0.03</td><td>0.3%</td></tr>
+  </tbody></table>
+
+  </div>
+</div>
+
+<h2>四、耗时 TOP 与失败命令</h2>
+<div class="grid">
+  <div class="card">
+    <h3 style="margin-top:0;">A 耗时 TOP 6</h3>
+      <table><thead><tr><th>#</th><th>耗时(ms)</th><th>类型</th><th>命令</th></tr></thead><tbody>
+  <tr><td>27</td><td class='mono'>1942.9</td><td>PPT 转换 (soffice)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; soffice --headless --convert-to pdf --outdir qa output/final.pptx 2&gt;&amp;1 | tail -2; echo "=== pdftotext 检查占位符与重复 ==="; pdftotext qa/final.pdf qa/final.txt 2&gt;&amp;1; grep -n "Click to edit\|Master title\|Master text" qa/final.txt | head -20; echo "=== 每页文本预览 ==="; python3 -c "
+import re
+txt = open('qa/final.txt', encoding='utf-8').read()
+pages = txt.split(chr(12))
+for i, p in enumerate(pages, 1):
+    p = p.strip()
+    print(f'--- 第{i}页 ({len(p)}字符) ---')
+    print(p[:200])
+    print()
+"</td></tr>
+  <tr><td>6</td><td class='mono'>1073.85</td><td>PPT 转换 (soffice)</td><td class='mono'>echo "node: $(node -v 2&gt;&amp;1)"; echo "python3: $(python3 --version 2&gt;&amp;1)"; echo "soffice: $(soffice --version 2&gt;&amp;1 | head -1)"; echo "pdftoppm: $(pdftoppm -v 2&gt;&amp;1 | head -1)"; echo "===skill scripts==="; ls /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.py /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.js 2&gt;&amp;1 | head -40</td></tr>
+  <tr><td>32</td><td class='mono'>975.68</td><td>PPT 转换 (soffice)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; rm -f qa/final.pdf qa/final.txt &amp;&amp; soffice --headless --convert-to pdf --outdir qa output/final.pptx &gt;/dev/null 2&gt;&amp;1; pdftotext qa/final.pdf qa/final.txt 2&gt;&amp;1; echo "=== 占位符泄漏检查（应为空）==="; grep -c "Click to edit\|Master title\|Master text\|‹#›\|1/27/13" qa/final.txt; echo "=== 页数与每页首行 ==="; python3 -c "
+txt = open('qa/final.txt', encoding='utf-8').read()
+pages = [p.strip() for p in txt.split(chr(12)) if p.strip()]
+print('实际内容页数:', len(pages))
+for i,p in enumerate(pages,1):
+    first = p.split(chr(10))[0][:30]
+    print(f'  第{i}页: {first}')
+"; echo "=== 文件信息 ==="; ls -la output/final.pptx</td></tr>
+  <tr><td>30</td><td class='mono'>876.56</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1 | tail -4; echo "=== 各页字符数 ==="; python3 -c "
+import zipfile, re
+zf = zipfile.ZipFile('output/final.pptx')
+def vis(t): return sum(1.0 if ord(c)&gt;0x2E80 else 0.5 for c in t if not c.isspace())
+for n in sorted([n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)], key=lambda x:int(re.search(r'(\d+)',x).group(1))):
+    xml = zf.read(n).decode('utf-8','ignore')
+    t = ''.join(re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml))
+    print(f'{n}: {round(vis(t))} 视觉字')
+"</td></tr>
+  <tr><td>29</td><td class='mono'>871.18</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1 | tail -4; echo "=== 实际各页字符数（按 slide 编号）==="; python3 -c "
+import zipfile, re
+zf = zipfile.ZipFile('output/final.pptx')
+def vis(t): return sum(1.0 if ord(c)&gt;0x2E80 else 0.5 for c in t if not c.isspace())
+for n in sorted([n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)], key=lambda x:int(re.search(r'(\d+)',x).group(1))):
+    xml = zf.read(n).decode('utf-8','ignore')
+    t = ''.join(re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml))
+    print(f'{n}: {round(vis(t))} 视觉字')
+"</td></tr>
+  <tr><td>19</td><td class='mono'>830.04</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1; echo "=== EXIT $? ==="; ls -la output/</td></tr>
+  </tbody></table>
+
+    <h3>A 失败命令（rc≠0）</h3>
+      <table><thead><tr><th>#</th><th>rc</th><th>类型</th><th>命令</th></tr></thead><tbody>
+  <tr><td>1</td><td class='mono'>2</td><td>环境探查 (find)</td><td class='mono'>find /run/aries-jiuwen-93cc9c73c55f7719 -maxdepth 8 -type d -name "ppt-creation" 2&gt;/dev/null; echo "---"; ls -d /run/aries-jiuwen-93cc9c73c55f7719/home/data/*/ 2&gt;/dev/null</td></tr>
+  <tr><td>2</td><td class='mono'>2</td><td>目录列举 (ls)</td><td class='mono'>ls -la /run/aries-jiuwen-93cc9c73c55f7719/ 2&gt;&amp;1; echo "===HOME==="; ls -la /run/aries-jiuwen-93cc9c73c55f7719/home/ 2&gt;&amp;1; echo "===DATA==="; ls -la /run/aries-jiuwen-93cc9c73c55f7719/home/data/ 2&gt;&amp;1</td></tr>
+  <tr><td>13</td><td class='mono'>2</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1; echo "=== EXIT $? ==="; ls -la output/ 2&gt;&amp;1</td></tr>
+  </tbody></table>
+
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0;">B 耗时 TOP 6</h3>
+      <table><thead><tr><th>#</th><th>耗时(ms)</th><th>类型</th><th>命令</th></tr></thead><tbody>
+  <tr><td>35</td><td class='mono'>2244.47</td><td>PPT 转换 (soffice)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; soffice --headless --convert-to pdf --outdir output output/final.pptx 2&gt;&amp;1 | tail -2; echo "=== PDF 页数 ==="; pdfinfo output/final.pdf 2&gt;/dev/null | grep -E "Pages|Page size"; echo "=== 生成缩略图 ==="; pdftoppm -jpeg -r 100 output/final.pdf qa/slide 2&gt;&amp;1; ls -la qa/*.jpg 2&gt;/dev/null | head</td></tr>
+  <tr><td>33</td><td class='mono'>1076.37</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; node slides.js &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -2 &amp;&amp; python3 rename_slides.py output/final.pptx output/final.pptx &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</td></tr>
+  <tr><td>6</td><td class='mono'>1048.6</td><td>PPT 转换 (soffice)</td><td class='mono'>node --version; echo "---npm root---"; ls /opt/aries-presentation/node_modules/pptxgenjs/package.json 2&gt;/dev/null &amp;&amp; echo "pptxgenjs ok"; echo "---sharp---"; ls /opt/aries-presentation/node_modules/sharp/package.json 2&gt;/dev/null &amp;&amp; echo "sharp ok" || echo "no sharp"; echo "---python---"; python3 --version; echo "---soffice/pdftoppm---"; soffice --version 2&gt;/dev/null | head -1; pdftoppm -v 2&gt;/dev/null | head -1; echo "---scripts---"; ls /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.py | head -30</td></tr>
+  <tr><td>13</td><td class='mono'>815.41</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; node slides.js &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27"</td></tr>
+  <tr><td>31</td><td class='mono'>791.12</td><td>Python 内联检查</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -2 &amp;&amp; python3 rename_slides.py output/final.pptx output/final.pptx &amp;&amp; echo "=== 校验 slide 文件名与播放顺序 ===" &amp;&amp; python3 -c "
+import zipfile, re
+with zipfile.ZipFile('output/final.pptx') as z:
+    names = sorted([n for n in z.namelist() if 'ppt/slides/slide' in n and n.endswith('.xml') and '/_rels/' not in n])
+    print('slide 文件:', [n.rsplit('/',1)[-1] for n in names])
+    prs = z.read('ppt/presentation.xml').decode('utf-8')
+    rids = re.findall(r'&lt;p:sldId[^&gt;]*r:id=\"(rId\d+)\"', prs)
+    rels = z.read('ppt/_rels/presentation.xml.rels').decode('utf-8')
+    rid2slide = dict(re.findall(r'Id=\"(rId\d+)\"[^&gt;]*slides/(slide\d+\.xml)\"', rels))
+    print('播放顺序:', [rid2slide.get(r) for r in rids])
+"</td></tr>
+  <tr><td>28</td><td class='mono'>758.76</td><td>PPT 生成/后处理 (python3)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -3 &amp;&amp; python3 rename_slides.py output/final.pptx output/final.pptx</td></tr>
+  </tbody></table>
+
+    <h3>B 失败命令（rc≠0）</h3>
+      <table><thead><tr><th>#</th><th>rc</th><th>类型</th><th>命令</th></tr></thead><tbody>
+  <tr><td>2</td><td class='mono'>1</td><td>环境探查 (find)</td><td class='mono'>ls -la /run/aries-jiuwen-43075c2743787d78/home/data/service_default/agent_default/agent/jiuwenclaw_workspace/ 2&gt;/dev/null; echo "=== skills ==="; ls -la /run/aries-jiuwen-43075c2743787d78/home/data/service_default/agent_default/agent/jiuwenclaw_workspace/skills/ 2&gt;/dev/null; echo "=== find skills ==="; find /run -maxdepth 8 -type d -name "skills" 2&gt;/dev/null</td></tr>
+  <tr><td>7</td><td class='mono'>1</td><td>PPT 生成 (node/pptxgenjs)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase design &amp;&amp; echo "=== execution-lock design OK ===" &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase design &amp;&amp; echo "=== evidence-plan design OK ==="</td></tr>
+  <tr><td>11</td><td class='mono'>1</td><td>PPT 生成/后处理 (python3)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27"</td></tr>
+  <tr><td>14</td><td class='mono'>1</td><td>PPT 生成/后处理 (python3)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</td></tr>
+  <tr><td>24</td><td class='mono'>1</td><td>PPT 生成/后处理 (python3)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</td></tr>
+  <tr><td>29</td><td class='mono'>1</td><td>PPT 生成/后处理 (python3)</td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</td></tr>
+  </tbody></table>
+
+  </div>
+</div>
+
+<h2>五、完整命令清单（可筛选 / 排序）</h2>
+<div class="card">
+  <div class="toolbar">
+    <label>查看域：
+      <select id="domainSelect" onchange="render()">
+        <option value="A-worker">A · sandbox-worker（分体式 Worker）— 32 条</option>
+        <option value="B-harness">B · sandbox-harness（一体式 Harness）— 39 条</option>
+      </select>
+    </label>
+    <label>排序方式：
+      <select id="sortSelect" onchange="render()">
+        <option value="order">按执行顺序</option>
+        <option value="time">按耗时降序</option>
+      </select>
+    </label>
+    <span id="cmdCount" class="note"></span>
+  </div>
+  <div id="cmdlist"></div>
+</div>
+
+<h2>六、PPT 输出与独立评分</h2>
+<div class="card">
+  <p class="note" style="margin:0 0 10px;">评分规则：<b>requires exactly 5 slides, each with nonempty body content</b>（正好 5 页，且每页正文非空）。A/B 最终均为 <span class="pill ok">passed</span>（score=1）。</p>
+  <table>
+    <thead><tr><th>组</th><th>文件</th><th>页数</th><th>字节</th><th>评分</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="2">A</td><td class="mono">content.pptx</td><td>3</td><td class="mono">129,018</td><td><span class="pill fail">未通过</span></td><td>中间产物，只有 3 页</td></tr>
+      <tr><td class="mono">final.pptx</td><td>5</td><td class="mono">38,083</td><td><span class="pill ok">通过</span></td><td>最终输出</td></tr>
+      <tr><td rowspan="4">B</td><td class="mono">content.pptx</td><td>3</td><td class="mono">122,312</td><td><span class="pill fail">未通过</span></td><td>中间产物，只有 3 页</td></tr>
+      <tr><td class="mono">final.pptx</td><td>5</td><td class="mono">37,213</td><td><span class="pill ok">通过</span></td><td>最终输出</td></tr>
+      <tr><td class="mono">template-clean.pptx</td><td>5</td><td class="mono">31,430</td><td><span class="pill fail">未通过</span></td><td>slide3/4 正文为空（清理占位符后）</td></tr>
+      <tr><td class="mono">大模型发展.pptx</td><td>5</td><td class="mono">37,213</td><td><span class="pill ok">通过</span></td><td>与 final.pptx 内容 SHA 相同</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>七、B 第 5 条命令的 known-gap</h2>
+<div class="card">
+  <p style="margin:0;">
+    本包唯一保留的关联缺口：<b>B 第 5 条</b>（<span class="mono">call_00_WMn8tGVObVXGEz6Zfjmn9942</span>）命令文本、ToolCall 和退出结果完整，退出码 0，
+    但 connection 回调时 <b>PID 300 的出生身份（birth ticks / PPID / cwd）不可用</b>，因此不能确认其 perf 生命期关联，状态保持 <span class="pill warn">unknown</span>。
+  </p>
+  <pre>cd /workspace/aries-case/projects/llm-development && rmdir '{sources,analysis,assets,output,qa}' 2>/dev/null; mkdir -p sources analysis assets output qa && ls -la</pre>
+  <p class="note" style="margin:0;">
+    perf.script 中虽存在同 PID 300 的 FORK/COMM/EXIT 候选（第 272352/272353/272492 行），但缺独立出生身份，索引不凭邻近时间补造关联；
+    未采集到专门 reap/errno 证据，不能断言身份缺失的唯一原因（<span class="mono">repaired_or_inferred_association=false</span>）。
+  </p>
+</div>
+
+<h2>八、各域 Profiling 工具与采集详情</h2>
+
+<div class="card">
+  <p style="margin:0;">
+    三个执行域运行<b>完全相同的六工具采集命令</b>（仅 perf 的 <span class="mono">--tid</span> 目标、pidstat 的 <span class="mono">-p</span> 目标、以及 perf/sar 的输出路径按域区分），保证三域采集口径一致、结果可比。
+    工具版本：perf <span class="mono">6.1.190</span> · sysstat <span class="mono">12.6.1</span>（vmstat/iostat/mpstat/sar/pidstat）· Python <span class="mono">3.12.15</span> · guest kernel <span class="mono">6.6.0-72.0.0.76.r1893_129.hce3.x86_64</span>。
+  </p>
+</div>
+
+<h3>8.1 A/ecs-harness（分体式 · ECS 外置 Harness · PID 21 · <span class="off pill">runtime_context_only</span>）</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>工具</th><th>scope</th><th>详细命令（argv）</th><th>数据产物</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">perf</td><td class="mono">runtime</td><td class="mono">perf record --tid 21 --delay=-1 --control fd:3,6 --clockid mono -e cpu-clock -F 99 --call-graph fp --inherit --timestamp --no-buildid-cache -o /run/aries-jiuwen-4f28049bddd460ab-profile/00-perf/perf.data</td><td class="mono">perf.data 10.8MB · perf.script 107.5MB · perf-21.map 7.9MB(Python JIT) · 进程 maps ×1</td></tr>
+      <tr><td class="mono">vmstat</td><td class="mono">guest</td><td class="mono">/usr/bin/vmstat -w -t 1</td><td class="mono">stdout.txt 24.3KB</td></tr>
+      <tr><td class="mono">iostat</td><td class="mono">guest</td><td class="mono">/usr/bin/iostat -x -t -y 1</td><td class="mono">stdout.txt 115.8KB · devices.json</td></tr>
+      <tr><td class="mono">mpstat</td><td class="mono">guest</td><td class="mono">/usr/bin/mpstat -P ALL 1</td><td class="mono">stdout.txt 93.4KB</td></tr>
+      <tr><td class="mono">sar</td><td class="mono">guest</td><td class="mono">/usr/bin/sar -A -o /run/aries-jiuwen-4f28049bddd460ab-profile/04-sar/sar.data 1</td><td class="mono">sar.data 498.1KB · decoded.txt 729KB · stdout 1235.7KB</td></tr>
+      <tr><td class="mono">pidstat</td><td class="mono">runtime</td><td class="mono">/usr/bin/pidstat -u -r -d -w -t -p 21 1</td><td class="mono">stdout.txt 846KB · pid-identities.jsonl 204.6KB</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>8.2 A/sandbox-worker（分体式 · 沙箱 Worker · PID 177 · 32 条命令）</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>工具</th><th>scope</th><th>详细命令（argv）</th><th>数据产物</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">perf</td><td class="mono">runtime</td><td class="mono">perf record --tid 177 --delay=-1 --control fd:3,6 --clockid mono -e cpu-clock -F 99 --call-graph fp --inherit --timestamp --no-buildid-cache -o /run/aries-jiuwen-remote-b61bd6a69736f622-profile/00-perf/perf.data</td><td class="mono">perf.data 1.0MB · perf.script 3.8MB · perf-177.map 1.0MB(Python JIT) · 进程 maps ×79</td></tr>
+      <tr><td class="mono">vmstat</td><td class="mono">guest</td><td class="mono">/usr/bin/vmstat -w -t 1</td><td class="mono">stdout.txt 26.3KB</td></tr>
+      <tr><td class="mono">iostat</td><td class="mono">guest</td><td class="mono">/usr/bin/iostat -x -t -y 1</td><td class="mono">stdout.txt 125KB · devices.json</td></tr>
+      <tr><td class="mono">mpstat</td><td class="mono">guest</td><td class="mono">/usr/bin/mpstat -P ALL 1</td><td class="mono">stdout.txt 100.9KB</td></tr>
+      <tr><td class="mono">sar</td><td class="mono">guest</td><td class="mono">/usr/bin/sar -A -o /run/aries-jiuwen-remote-b61bd6a69736f622-profile/04-sar/sar.data 1</td><td class="mono">sar.data 851.9KB · decoded.txt 1219KB · stdout 1694.4KB</td></tr>
+      <tr><td class="mono">pidstat</td><td class="mono">runtime</td><td class="mono">/usr/bin/pidstat -u -r -d -w -t -p 177 1</td><td class="mono">stdout.txt 1142.6KB · pid-identities.jsonl 278.2KB</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>8.3 B/sandbox-harness（一体式 · 沙箱内 Harness · PID 184 · 39 条命令）</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>工具</th><th>scope</th><th>详细命令（argv）</th><th>数据产物</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">perf</td><td class="mono">runtime</td><td class="mono">perf record --tid 184 --delay=-1 --control fd:3,6 --clockid mono -e cpu-clock -F 99 --call-graph fp --inherit --timestamp --no-buildid-cache -o /run/aries-jiuwen-965407320fc78155-profile/00-perf/perf.data</td><td class="mono">perf.data 6.6MB · perf.script 59.7MB · perf-184.map 7.9MB(Python JIT) · 进程 maps ×84</td></tr>
+      <tr><td class="mono">vmstat</td><td class="mono">guest</td><td class="mono">/usr/bin/vmstat -w -t 1</td><td class="mono">stdout.txt 22.2KB</td></tr>
+      <tr><td class="mono">iostat</td><td class="mono">guest</td><td class="mono">/usr/bin/iostat -x -t -y 1</td><td class="mono">stdout.txt 105.2KB · devices.json</td></tr>
+      <tr><td class="mono">mpstat</td><td class="mono">guest</td><td class="mono">/usr/bin/mpstat -P ALL 1</td><td class="mono">stdout.txt 84.9KB</td></tr>
+      <tr><td class="mono">sar</td><td class="mono">guest</td><td class="mono">/usr/bin/sar -A -o /run/aries-jiuwen-965407320fc78155-profile/04-sar/sar.data 1</td><td class="mono">sar.data 717.4KB · decoded.txt 1026.5KB · stdout 1426.3KB</td></tr>
+      <tr><td class="mono">pidstat</td><td class="mono">runtime</td><td class="mono">/usr/bin/pidstat -u -r -d -w -t -p 184 1</td><td class="mono">stdout.txt 1728.9KB · pid-identities.jsonl 412.1KB</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>8.4 三域对比与总结性结论</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>指标</th><th>A/ecs-harness</th><th>A/sandbox-worker</th><th>B/sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>perf.data</td><td class="mono">10.8 MB（最大）</td><td class="mono">1.0 MB（最小）</td><td class="mono">6.6 MB（居中）</td></tr>
+      <tr><td>perf.script（解码）</td><td class="mono">107.5 MB</td><td class="mono">3.8 MB</td><td class="mono">59.7 MB</td></tr>
+      <tr><td>perf-PID.map（Python JIT）</td><td class="mono">7.9 MB</td><td class="mono">1.0 MB</td><td class="mono">7.9 MB</td></tr>
+      <tr><td>符号 maps 数量</td><td class="mono">1 进程 + 1 JIT</td><td class="mono">79 进程 + 1 JIT</td><td class="mono">84 进程 + 1 JIT</td></tr>
+      <tr><td>pidstat stdout</td><td class="mono">846 KB</td><td class="mono">1143 KB</td><td class="mono">1729 KB（最大）</td></tr>
+    </tbody>
+  </table>
+  <ul style="margin-top:12px;">
+    <li><b>perf 采样体积反映「谁在跑模型/运行时」</b>：A/ecs-harness 采样最大（10.8MB data / 107.5MB script）——它是模型调度 + Agent 运行时的 Python 主体，持续高 CPU；一体式 B 次之（6.6MB / 59.7MB）——同一进程内承载 Harness 运行时 + 39 条 tool 命令；分体式的 A/worker 最小（1.0MB / 3.8MB）——只执行 32 条短命 tool 命令。</li>
+    <li><b>Python JIT 符号（perf-PID.map）</b>：ECS 外置 harness（7.9MB）≈ B 内嵌 harness（7.9MB）≫ A worker（1.0MB）。<b>harness 主体（无论外置还是内嵌）的 Python JIT 符号都很丰富，worker 侧明显更少</b>——说明 PPT 任务里真正的 Python 密集计算在 harness 运行时，而非 worker 的 shell 命令。</li>
+    <li><b>符号 maps 数量反映进程树追踪粒度</b>：A/ecs-harness 只保留 1 个进程映射（主进程 PID 21，因 runtime_context_only 不追踪 Tool 命令）；而 worker/harness 命令账本域各自保留了 79 / 84 个进程映射——<b>每个 tool 命令 fork 出来的子进程（sh/find/ls/node/python/soffice 等）都有独立映射</b>。</li>
+    <li><b>guest 域工具（vmstat/iostat/mpstat/sar）三域数据量相近</b>（22–26KB / 105–125KB / 85–101KB / 717–852KB sar.data），说明三条采集会话时长与系统活动量级相当。</li>
+    <li><b>pidstat stdout 以 B 一体式最大（1729KB）</b>：B 的 harness 与 tool 同域同 PID 树，被跟踪的线程活动最密集。</li>
+  </ul>
+</div>
+
+<h3>8.5 CPU 火焰图（perf flamegraph · 本次专题生成）</h3>
+<div class="card">
+  <ul>
+    <li><b>A · ecs-harness</b>（分体式 · ECS 外置 Harness · PID 21）：<a href="flamegraph-A-ecs-harness-PID21.svg" target="_blank" rel="noopener">打开火焰图 ↗</a></li>
+    <li><b>A · sandbox-worker</b>（分体式 · 沙箱 Worker · PID 177）：<a href="flamegraph-A-sandbox-worker-PID177.svg" target="_blank" rel="noopener">打开火焰图 ↗</a></li>
+    <li><b>B · sandbox-harness</b>（一体式 · 沙箱内 Harness · PID 184）：<a href="flamegraph-B-sandbox-harness-PID184.svg" target="_blank" rel="noopener">打开火焰图 ↗</a></li>
+  </ul>
+  <p class="note" style="margin-top:8px;">
+    由 <span class="mono">perf.script</span> 经 Brendan Gregg FlameGraph（<span class="mono">stackcollapse-perf.pl</span> + <span class="mono">flamegraph.pl</span>）生成；采样 <span class="mono">cpu-clock -F 99 --call-graph fp</span>，栈帧名截断至 80 字符（Rust/Python 符号原名过长）。SVG 自包含、可缩放，点击帧可局部放大、悬停显示样本数。
+  </p>
+</div>
+
+<h3>8.6 CPU 开销分析（pidstat + mpstat）</h3>
+<div class="card">
+  <p style="margin-top:0;">
+    口径：<span class="mono">mpstat -P ALL 1</span> 给出整机 4 核系统级构成（含所有进程 + 内核 + 采集器本身）；<span class="mono">pidstat -u -t -p &lt;PID&gt; 1</span> 只跟踪<b>目标 harness/worker 这一个 Python 进程</b>（不含 fork 出来的 tool 命令）。三域跑在<b>不同机器</b>：A·ecs-harness 在 ECS Ubuntu VM，A·sandbox-worker 与 B·sandbox-harness 分属两个独立沙箱 HCE VM。
+  </p>
+  <table>
+    <thead><tr><th>mpstat 系统级（4 核）</th><th>A·ecs-harness</th><th>A·sandbox-worker</th><th>B·sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>采集窗口</td><td class="mono">08:17:21–08:20:03</td><td class="mono">08:17:15–08:20:10</td><td class="mono">08:20:46–08:23:13</td></tr>
+      <tr><td>忙 busy（%idle 反值）</td><td><b>27.5%</b></td><td>3.2%</td><td><b>17.7%</b></td></tr>
+      <tr><td>%usr（用户态）</td><td>24.2%</td><td>1.6%</td><td>14.3%</td></tr>
+      <tr><td>%sys（内核态）</td><td>2.6%</td><td>1.1%</td><td>2.6%</td></tr>
+      <tr><td>%iowait</td><td>0.6%</td><td>0.5%</td><td>0.8%</td></tr>
+      <tr><td>%irq / %soft</td><td>0.0% / 0.1%</td><td>0.0% / 0.0%</td><td>0.0% / 0.0%</td></tr>
+      <tr><td>%idle</td><td>72.5%</td><td>96.8%</td><td>82.3%</td></tr>
+    </tbody>
+  </table>
+
+  <table style="margin-top:14px;">
+    <thead><tr><th>pidstat 目标进程</th><th>A·ecs-harness</th><th>A·sandbox-worker</th><th>B·sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>目标进程（角色）</td><td class="mono">python PID 21（harness）</td><td class="mono">python PID 177（worker）</td><td class="mono">python PID 184（harness）</td></tr>
+      <tr><td>线程数</td><td>23</td><td>28</td><td>57</td></tr>
+      <tr><td>平均 %CPU（相对单核）</td><td><b>86.7%</b>（usr 84.7 / sys 2.1）</td><td>1.5%（usr 1.2 / sys 0.3）</td><td><b>52.8%</b>（usr 49.8 / sys 3.0）</td></tr>
+      <tr><td>峰值 %CPU</td><td>122%</td><td>87%</td><td>129%</td></tr>
+      <tr><td>折合核数</td><td><b>0.87 核</b></td><td>0.02 核</td><td><b>0.53 核</b></td></tr>
+      <tr><td>占系统 busy 份额</td><td><b>78.7%</b></td><td>11.7%</td><td><b>74.5%</b></td></tr>
+    </tbody>
+  </table>
+
+  <table style="margin-top:14px;">
+    <thead><tr><th>忙 CPU 的去向（占 busy）</th><th>A·ecs-harness</th><th>A·sandbox-worker</th><th>B·sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>用户态</td><td>88.1%</td><td>50.0%</td><td>80.5%</td></tr>
+      <tr><td>内核态</td><td>9.3%</td><td>34.8%</td><td>14.9%</td></tr>
+      <tr><td>iowait</td><td>2.3%</td><td>14.9%</td><td>4.4%</td></tr>
+    </tbody>
+  </table>
+
+  <ul style="margin-top:12px;">
+    <li><b>CPU 几乎全在「用户态 Python 运行时」，不是磁盘 I/O、也不是内核</b>：三域 iowait 全程 &lt;1%，说明 soffice 渲染、写 pptx 都不阻塞 CPU——本任务本质是「编排 + 模型调度」，重活不在本地磁盘。</li>
+    <li><b>大头在 harness 的 Agent 运行时</b>：ecs-harness（PID 21）与一体式 B（PID 184）里，Python 进程独占系统 busy 的 <b>78.7% / 74.5%</b>，是真正的 CPU 热点（对应 8.5 火焰图里的 <span class="mono">PyImport_*</span> / <span class="mono">py::*</span> / Rust <span class="mono">Vec::from_iter</span> 等导入与数据处理帧）。</li>
+    <li><b>沙箱 worker 本身几乎不耗 CPU</b>（仅 0.02 核、占 busy 11.7%）：它大部分时间在<b>睡眠等待 tool 命令</b>；fork 出来的 tool 命令占了 worker 域 busy 的其余 ~88%，但绝对量极小（整机才 3.2% busy），是短命、I/O 型进程。</li>
+    <li><b>分体式 vs 一体式的 CPU 画像</b>：分体式 A 把<b>重 CPU 的 Agent 运行时放在 ECS 外置 harness（0.87 核）</b>，沙箱里只留轻量 worker（0.02 核）；一体式 B 把 harness 运行时也塞进沙箱，单进程 <b>0.53 核</b>（约为外置 harness 的 60%）。即真正决定 CPU 开销的是「harness/Agent 运行时在哪、怎么编排」，而不是 PPT 渲染本身。</li>
+  </ul>
+</div>
+
+<h3>8.7 其他资源开销（内存 / 磁盘 I/O / 上下文切换 / 网络）</h3>
+<div class="card">
+  <p style="margin-top:0;">
+    来源：<span class="mono">01-vmstat</span>（内存·swap·io·系统）、<span class="mono">02-iostat</span>（vda/vdb 块设备）、<span class="mono">04-sar</span>（分页·中断·块·网络·文件系统）、<span class="mono">05-pidstat -r -d -w</span>（目标进程内存·磁盘·上下文切换）。三机总内存均 ~8GB（模板规格 4 vCPU / 8192 MiB）。
+  </p>
+
+  <table>
+    <thead><tr><th>内存</th><th>A·ecs-harness</th><th>A·sandbox-worker</th><th>B·sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>目标 python RSS（avg / max）</td><td>418 MB / 536 MB</td><td>103 MB / 105 MB</td><td>444 MB / 566 MB</td></tr>
+      <tr><td>目标 python %MEM</td><td>5.5%</td><td>1.3%</td><td>5.6%</td></tr>
+      <tr><td>目标 python VSZ（avg / max）</td><td>1.29 GB / 1.66 GB</td><td>1.27 GB / 2.01 GB</td><td>2.26 GB / 3.03 GB</td></tr>
+      <tr><td>系统已用（%memused）</td><td>17.0%</td><td>2.8%</td><td>7.1%</td></tr>
+      <tr><td>系统 cache（页缓存）</td><td>3.9 GB</td><td>47 MB</td><td>47 MB</td></tr>
+      <tr><td>swap si / so</td><td>0 / 0</td><td>0 / 0</td><td>0 / 0</td></tr>
+    </tbody>
+  </table>
+
+  <table style="margin-top:14px;">
+    <thead><tr><th>磁盘 I/O</th><th>A·ecs-harness</th><th>A·sandbox-worker</th><th>B·sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>vda 读 rkB/s（avg / max）</td><td>850 / 23.3 MB/s</td><td>1.48 MB/s / 65.5 MB/s</td><td>2.68 MB/s / 48.1 MB/s</td></tr>
+      <tr><td>vda 写 wkB/s（avg / max）</td><td><b>7.92 MB/s</b> / 56.8 MB/s</td><td>~0（写走 vdb）</td><td>~0（写走 vdb）</td></tr>
+      <tr><td>vdb 写 wkB/s（avg）</td><td>—（无 vdb）</td><td>51.7 KB/s</td><td>127.7 KB/s</td></tr>
+      <tr><td>vda %util（avg / max）</td><td>3.9% / 29.4%</td><td>2.1% / 68.0%</td><td>3.2% / 51.0%</td></tr>
+      <tr><td>python kB_rd/s（avg / max）</td><td>845 / 23.4 MB/s</td><td>1.47 MB/s / 98.2 MB/s</td><td>2.73 MB/s / 98.5 MB/s</td></tr>
+      <tr><td>python kB_wr/s（avg / max）</td><td>349 / 3.3 MB/s</td><td>85 / 2.2 MB/s</td><td>184 / 2.1 MB/s</td></tr>
+      <tr><td>python iodelay</td><td>0</td><td>0</td><td>0</td></tr>
+    </tbody>
+  </table>
+
+  <table style="margin-top:14px;">
+    <thead><tr><th>上下文切换 / 网络</th><th>A·ecs-harness</th><th>A·sandbox-worker</th><th>B·sandbox-harness</th></tr></thead>
+    <tbody>
+      <tr><td>系统 cswch/s（avg / max）</td><td>8,008 / 45,701</td><td>541 / 5,945</td><td>3,369 / 20,589</td></tr>
+      <tr><td>python cswch/s（avg / max）</td><td>161 / 1,231</td><td>18 / 688</td><td>268 / 1,746</td></tr>
+      <tr><td>python nvcswch/s（avg）</td><td>13.7</td><td>0.1</td><td>9.2</td></tr>
+      <tr><td>eth0 rxkB/s / txkB/s</td><td>168 / 191</td><td>3 / 5</td><td>218 / 239</td></tr>
+      <tr><td>loopback rxkB/s / txkB/s</td><td>≈0 / ≈0</td><td>4 / 4</td><td>85 / 85</td></tr>
+    </tbody>
+  </table>
+
+  <ul style="margin-top:12px;">
+    <li><b>内存不是瓶颈</b>：三机内存均大量空闲、swap 全程为 0。目标 python 的常驻集 harness 侧 ~418–444 MB（%MEM 5.5%）、worker 侧仅 ~103 MB（1.3%）；VSZ 虽达 1.3–2.3 GB 但多为保留虚存。ECS VM 页缓存 3.9 GB（读得多、有缓存），HCE 沙箱缓存仅 47 MB（只读 rootfs + overlay）。</li>
+    <li><b>磁盘 I/O 读为主、几乎不阻塞</b>：iowait &lt;1%、iodelay≈0，磁盘不构成瓶颈。读集中在模块/二进制加载（vda 读 850 KB/s–2.7 MB/s，python 进程本身 845 KB/s–2.7 MB/s）。<b>ecs-harness 系统级写显著偏高（wkB/s 均值 7.92 MB/s）</b>，但目标 python 仅写 349 KB/s——说明写来自同机其他组件（观测器/日志/临时文件），非 PPT 计算路径；而两个沙箱的写走独立数据卷 <span class="mono">vdb</span>（51.7 / 127.7 KB/s），vda 上 w/s≈0。</li>
+    <li><b>上下文切换与 CPU 忙度正相关</b>：系统 cswch/s 为 ecs 8,008 &gt; B 3,369 &gt; worker 541，与三域 busy 排序一致；目标 python 的 cswch 18–268/s 多为<b>自愿切换</b>（等 I/O/等调度），与「worker 睡眠等待」画像吻合。</li>
+    <li><b>网络：harness↔模型 API 走 eth0，一体式 B 多一路回环</b>：eth0 吞吐中等（rx 168–218 KB/s）——harness 与外部模型 API 通信；一体式 B 的 loopback 流量显著（85 KB/s），说明 harness 与 sandbox API 同机走回环，而分体式 A 的 worker 侧网络几乎为零。</li>
+  </ul>
+</div>
+
+<h2>九、运行与版本信息</h2>
+<div class="card">
+  <ul>
+    <li><b>observer 镜像</b>：OCI index <span class="mono">sha256:205a3e6b82ca…</span>（r2 已发布核验）</li>
+    <li><b>华为模板</b>：<span class="mono">5f0a562b-a6d7-46dc-a041-27b2223b750a:5b360076-d211-49dd-85b9-a422dedf45c0</span>（READY，4 vCPU / 8192 MiB，x86_64）</li>
+    <li><b>候选二进制 SHA</b>：<span class="mono">1e330f1309fe…</span>（aries-command-index）</li>
+    <li><b>冻结源码聚合 SHA</b>：<span class="mono">3bbd2da85c84…</span>（1080 项）</li>
+    <li><b>Run ID</b>：A = <span class="mono">20261104T081703.526073002Z-…-a</span>；B = <span class="mono">20261104T082034.626789682Z-…-b</span></li>
+    <li><b>独立验收源</b>：<span class="mono">delivery-validation-1793780648653004343/verification.json</span></li>
+    <li><b>Tape</b>：A <span class="mono">6a15976b…</span>、B <span class="mono">f31d9799…</span>（各自原成功 Tape，不含入包）</li>
+  </ul>
+</div>
+
+<h2>十、方法论说明</h2>
+<div class="card">
+  <ul>
+    <li><b>命令耗时口径</b>：spawn_requested → child_exit 的原生单调时钟墙钟差（非 CPU 用量，含 I/O 等待与进程调度）。</li>
+    <li><b>perf_selection.matched</b> = 内核 FORK/EXIT/COMM 证据确认的生命期关联（不是 CPU 热点归因）；命令有身份不代表有 CPU 采样点。</li>
+    <li><b>guest 域指标</b>（vmstat/iostat/mpstat/sar）是沙箱整机视角，含无关进程与采集器自身，不能归给单条命令。</li>
+    <li><b>pidstat</b> 只跟踪选定 PID 及采样线程，不覆盖全部短命后代。</li>
+    <li><b>ECS 与沙箱 PID/时钟独立</b>，跨域不直接相减时间戳；<span class="mono">network_policy=assumed_not_enforced</span>（评分通过 ≠ 网络隔离已证实）。</li>
+  </ul>
+</div>
+
+</div>
+<script>
+var cmdData = {"B-harness":[{"ord":1,"dur":231.6,"rc":0,"perf":"matched","cat":"环境探查 (find)","cmd":"find /run/aries-jiuwen-43075c2743787d78/home/data -type d -name \"ppt-creation\" 2\u0026gt;/dev/null; echo \"---\"; find / -maxdepth 6 -type d -name \"ppt-creation\" 2\u0026gt;/dev/null | head -20"},{"ord":2,"dur":7.92,"rc":1,"perf":"matched","cat":"环境探查 (find)","cmd":"ls -la /run/aries-jiuwen-43075c2743787d78/home/data/service_default/agent_default/agent/jiuwenclaw_workspace/ 2\u0026gt;/dev/null; echo \"=== skills ===\"; ls -la /run/aries-jiuwen-43075c2743787d78/home/data/service_default/agent_default/agent/jiuwenclaw_workspace/skills/ 2\u0026gt;/dev/null; echo \"=== find skills ===\"; find /run -maxdepth 8 -type d -name \"skills\" 2\u0026gt;/dev/null"},{"ord":3,"dur":755.95,"rc":0,"perf":"matched","cat":"环境探查 (find)","cmd":"find / -name \"finalize_deck.py\" 2\u0026gt;/dev/null | head; echo \"=== template.pptx ===\"; find / -name \"template.pptx\" -path \"*ppt*\" 2\u0026gt;/dev/null | head; echo \"=== pptxgenjs ===\"; find / -name \"pptxgenjs*\" -maxdepth 8 2\u0026gt;/dev/null | head"},{"ord":4,"dur":13.47,"rc":0,"perf":"matched","cat":"目录列举 (ls)","cmd":"mkdir -p /workspace/aries-case/projects/llm-development/{sources,analysis,assets,output,qa} \u0026amp;\u0026amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/evidence-plan.json /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/evidence-plan.schema.json /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/execution-lock-reference.json /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/execution-lock.schema.json /workspace/aries-case/projects/llm-development/ \u0026amp;\u0026amp; echo \"工作区已建立\" \u0026amp;\u0026amp; ls -la /workspace/aries-case/projects/llm-development/"},{"ord":5,"dur":15.93,"rc":0,"perf":"unknown","cat":"目录列举 (ls)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; rmdir \u0027{sources,analysis,assets,output,qa}\u0027 2\u0026gt;/dev/null; mkdir -p sources analysis assets output qa \u0026amp;\u0026amp; ls -la"},{"ord":6,"dur":1048.6,"rc":0,"perf":"matched","cat":"PPT 转换 (soffice)","cmd":"node --version; echo \"---npm root---\"; ls /opt/aries-presentation/node_modules/pptxgenjs/package.json 2\u0026gt;/dev/null \u0026amp;\u0026amp; echo \"pptxgenjs ok\"; echo \"---sharp---\"; ls /opt/aries-presentation/node_modules/sharp/package.json 2\u0026gt;/dev/null \u0026amp;\u0026amp; echo \"sharp ok\" || echo \"no sharp\"; echo \"---python---\"; python3 --version; echo \"---soffice/pdftoppm---\"; soffice --version 2\u0026gt;/dev/null | head -1; pdftoppm -v 2\u0026gt;/dev/null | head -1; echo \"---scripts---\"; ls /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.py | head -30"},{"ord":7,"dur":216.67,"rc":1,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase design \u0026amp;\u0026amp; echo \"=== execution-lock design OK ===\" \u0026amp;\u0026amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase design \u0026amp;\u0026amp; echo \"=== evidence-plan design OK ===\""},{"ord":8,"dur":133.72,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase design \u0026amp;\u0026amp; echo \"=== execution-lock design OK ===\" \u0026amp;\u0026amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase design \u0026amp;\u0026amp; echo \"=== evidence-plan design OK ===\""},{"ord":9,"dur":121.27,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"cat /opt/aries-presentation/node_modules/pptxgenjs/package.json | grep -E \u0027\"main\"|\"version\"|\"name\"\u0027; echo \"---dist---\"; ls /opt/aries-presentation/node_modules/pptxgenjs/dist/ 2\u0026gt;/dev/null; echo \"---test require---\"; node -e \"const P=require(\u0027/opt/aries-presentation/node_modules/pptxgenjs\u0027); const p=new P(); console.log(\u0027pptxgenjs ok, version:\u0027, p.version||\u0027n/a\u0027)\""},{"ord":10,"dur":138.2,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; node slides.js"},{"ord":11,"dur":734.02,"rc":1,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\""},{"ord":12,"dur":647.66,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\" --keep-workdir /tmp/llm-keep 2\u0026gt;\u0026amp;1 | tail -5; echo \"=== slide8.xml 220-240 ===\"; sed -n \u0027220,240p\u0027 /tmp/llm-keep/template/ppt/slides/slide8.xml"},{"ord":13,"dur":815.41,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; node slides.js \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\""},{"ord":14,"dur":175.97,"rc":1,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json"},{"ord":15,"dur":125.28,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/unpack.py /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx /tmp/tpl-unpack \u0026gt;/dev/null 2\u0026gt;\u0026amp;1; echo \"=== 各 layout 的占位符类型 (ph type) ===\"; for f in /tmp/tpl-unpack/ppt/slideLayouts/slideLayout*.xml; do echo \"--- $(basename $f) ---\"; grep -o \u0027type=\"[a-zA-Z]*\"\u0027 \"$f\" | sort -u | tr \u0027\\n\u0027 \u0027 \u0027; echo; done"},{"ord":16,"dur":142.96,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/unpack.py output/final.pptx /tmp/final-unpack \u0026gt;/dev/null 2\u0026gt;\u0026amp;1; echo \"=== slide6(P02) 的 layout 引用 ===\"; cat /tmp/final-unpack/ppt/slides/_rels/slide6.xml.rels; echo; echo \"=== slide6 中是否含 title/ctrTitle 占位符 ===\"; grep -o \u0027type=\"[a-zA-Z]*\"\u0027 /tmp/final-unpack/ppt/slides/slide6.xml | sort | uniq -c"},{"ord":17,"dur":2.35,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"grep -n \"Click to edit\\|duplicate-chrome\\|duplicate_chrome\\|Master\\|master\" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py | head -40"},{"ord":18,"dur":4.24,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"echo \"=== slideMaster1.xml 中 \u0027Click to edit\u0027 文字 ===\"; grep -o \u0027Click to edit[^\u0026lt;]*\u0027 /tmp/final-unpack/ppt/slideMasters/slideMaster1.xml | sort | uniq -c; echo \"=== slideMaster1.xml 占位符类型 ===\"; grep -o \u0027type=\"[a-zA-Z]*\"\u0027 /tmp/final-unpack/ppt/slideMasters/slideMaster1.xml | sort | uniq -c; echo \"=== 封面 slide1 是否含 title 占位符与 meta ===\"; grep -o \u0027type=\"[a-zA-Z]*\"\u0027 /tmp/final-unpack/ppt/slides/slide1.xml | sort | uniq -c"},{"ord":19,"dur":2.41,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"grep -n \"Click\\|has_text\\|def parse_slide\\|def label\\|ph\\b\\|placeholder\\|inherit\" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py | head -50"},{"ord":20,"dur":4.17,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"grep -n \"Click\\|placeholder\\|ph type\\|title\\|clean\\|strip\\|remove\" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/merge_slides.py | head -30; echo \"=== make_blank_template.py 是否清理占位符 ===\"; grep -n \"Click\\|title\\|body\\|placeholder\\|ph \" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/make_blank_template.py | head -30"},{"ord":21,"dur":4.52,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"echo \"=== 模板解包目录中所有 \u0027Click to edit\u0027 文字分布 ===\"; grep -rl \"Click to edit\" /tmp/tpl-unpack/ 2\u0026gt;/dev/null; echo \"=== 具体文字 ===\"; grep -rho \"Click to edit[^\u0026lt;]*\" /tmp/tpl-unpack/ 2\u0026gt;/dev/null | sort | uniq -c"},{"ord":22,"dur":151.64,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\nsrc = \u0027/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx\u0027\ndst = \u0027output/template-clean.pptx\u0027\nwith zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, \u0027w\u0027, zipfile.ZIP_DEFLATED) as zout:\n    for item in zin.infolist():\n        data = zin.read(item.filename)\n        if item.filename.endswith(\u0027.xml\u0027):\n            text = data.decode(\u0027utf-8\u0027)\n            text = re.sub(r\u0027Click to edit[^\u0026lt;]*\u0027, \u0027\u0027, text)\n            data = text.encode(\u0027utf-8\u0027)\n        zout.writestr(item, data)\nprint(\u0027template-clean.pptx written\u0027)\n\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/unpack.py output/template-clean.pptx /tmp/tpl-clean-check \u0026gt;/dev/null 2\u0026gt;\u0026amp;1 \u0026amp;\u0026amp; echo \"clean template unpack OK\" \u0026amp;\u0026amp; grep -rc \"Click to edit\" /tmp/tpl-clean-check/ 2\u0026gt;/dev/null | grep -v \u0027:0\u0027 | head || echo \"no Click to edit remains\""},{"ord":23,"dur":719.45,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\" --template output/template-clean.pptx 2\u0026gt;\u0026amp;1 | tail -8"},{"ord":24,"dur":174.35,"rc":1,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json"},{"ord":25,"dur":4.06,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"echo \"=== master/layout 中所有非空 a:t 文字（示例占位符文字）===\"; grep -rho \u0027\u0026lt;a:t\u0026gt;[^\u0026lt;]*\u0026lt;/a:t\u0026gt;\u0027 /tmp/tpl-unpack/ppt/slideMasters/slideMaster1.xml | sort | uniq -c; echo \"=== 各 layout 中的示例文字 ===\"; grep -rho \u0027\u0026lt;a:t\u0026gt;[^\u0026lt;]*\u0026lt;/a:t\u0026gt;\u0027 /tmp/tpl-unpack/ppt/slideLayouts/*.xml | sort | uniq -c | head -30"},{"ord":26,"dur":43.76,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\nsrc = \u0027/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx\u0027\ndst = \u0027output/template-clean.pptx\u0027\nwith zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, \u0027w\u0027, zipfile.ZIP_DEFLATED) as zout:\n    for item in zin.infolist():\n        data = zin.read(item.filename)\n        if item.filename.endswith(\u0027.xml\u0027):\n            text = data.decode(\u0027utf-8\u0027)\n            text = re.sub(r\u0027Click to edit[^\u0026lt;]*\u0027, \u0027\u0027, text)\n            text = re.sub(r\u0027\u0026lt;a:t\u0026gt;(?:Second|Third|Fourth|Fifth) level\u0026lt;/a:t\u0026gt;\u0027, \u0027\u0026lt;a:t\u0026gt;\u0026lt;/a:t\u0026gt;\u0027, text)\n            data = text.encode(\u0027utf-8\u0027)\n        zout.writestr(item, data)\nprint(\u0027template-clean.pptx regenerated\u0027)\n\""},{"ord":27,"dur":43.24,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\ndef vis_len(t): return sum(1.0 if ord(c)\u0026gt;0x2E80 else 0.5 for c in t if not c.isspace())\nwith zipfile.ZipFile(\u0027output/final.pptx\u0027) as z:\n    # 播放顺序\n    prs = z.read(\u0027ppt/presentation.xml\u0027).decode(\u0027utf-8\u0027)\n    ids = re.findall(r\u0027\u0026lt;p:sldId[^\u0026gt;]*r:id=\\\"(rId\\d+)\\\"\u0027, prs)\n    rels = z.read(\u0027ppt/_rels/presentation.xml.rels\u0027).decode(\u0027utf-8\u0027)\n    rid2slide = dict(re.findall(r\u0027Id=\\\"(rId\\d+)\\\"[^\u0026gt;]*slides/(slide\\d+\\.xml)\\\"\u0027, rels))\n    print(\u0027播放顺序:\u0027, [rid2slide.get(i) for i in ids])\n    # 每个 slide 的字量\n    names = sorted([n for n in z.namelist() if re.fullmatch(r\u0027ppt/slides/slide\\d+\\.xml\u0027, n)], key=lambda n:int(re.search(r\u0027\\d+\u0027,n.rsplit(\u0027/\u0027,1)[-1]).group()))\n    for n in names:\n        xml = z.read(n).decode(\u0027utf-8\u0027, errors=\u0027ignore\u0027)\n        txt = \u0027\u0027.join(re.findall(r\u0027\u0026lt;a:t\u0026gt;([^\u0026lt;]*)\u0026lt;/a:t\u0026gt;\u0027, xml))\n        print(f\u0027{n.rsplit(chr(47),1)[-1]}: {round(vis_len(txt))} 字 | {txt[:60]!r}\u0027)\n\""},{"ord":28,"dur":758.76,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\" --template output/template-clean.pptx 2\u0026gt;\u0026amp;1 | tail -3 \u0026amp;\u0026amp; python3 rename_slides.py output/final.pptx output/final.pptx"},{"ord":29,"dur":177.37,"rc":1,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json"},{"ord":30,"dur":40.13,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile\nwith zipfile.ZipFile(\u0027output/final.pptx\u0027) as z:\n    names = sorted([n for n in z.namelist() if \u0027ppt/slides/slide\u0027 in n and n.endswith(\u0027.xml\u0027) and \u0027/_rels/\u0027 not in n])\n    print(\u0027slide 文件:\u0027, [n.rsplit(\u0027/\u0027,1)[-1] for n in names])\n    prs = z.read(\u0027ppt/presentation.xml\u0027).decode(\u0027utf-8\u0027)\n    rids = __import__(\u0027re\u0027).findall(r\u0027\u0026lt;p:sldId[^\u0026gt;]*r:id=\\\"(rId\\d+)\\\"\u0027, prs)\n    rels = z.read(\u0027ppt/_rels/presentation.xml.rels\u0027).decode(\u0027utf-8\u0027)\n    rid2slide = dict(__import__(\u0027re\u0027).findall(r\u0027Id=\\\"(rId\\d+)\\\"[^\u0026gt;]*slides/(slide\\d+\\.xml)\\\"\u0027, rels))\n    print(\u0027播放顺序:\u0027, [rid2slide.get(r) for r in rids])\n\""},{"ord":31,"dur":791.12,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\" --template output/template-clean.pptx 2\u0026gt;\u0026amp;1 | tail -2 \u0026amp;\u0026amp; python3 rename_slides.py output/final.pptx output/final.pptx \u0026amp;\u0026amp; echo \"=== 校验 slide 文件名与播放顺序 ===\" \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\nwith zipfile.ZipFile(\u0027output/final.pptx\u0027) as z:\n    names = sorted([n for n in z.namelist() if \u0027ppt/slides/slide\u0027 in n and n.endswith(\u0027.xml\u0027) and \u0027/_rels/\u0027 not in n])\n    print(\u0027slide 文件:\u0027, [n.rsplit(\u0027/\u0027,1)[-1] for n in names])\n    prs = z.read(\u0027ppt/presentation.xml\u0027).decode(\u0027utf-8\u0027)\n    rids = re.findall(r\u0027\u0026lt;p:sldId[^\u0026gt;]*r:id=\\\"(rId\\d+)\\\"\u0027, prs)\n    rels = z.read(\u0027ppt/_rels/presentation.xml.rels\u0027).decode(\u0027utf-8\u0027)\n    rid2slide = dict(re.findall(r\u0027Id=\\\"(rId\\d+)\\\"[^\u0026gt;]*slides/(slide\\d+\\.xml)\\\"\u0027, rels))\n    print(\u0027播放顺序:\u0027, [rid2slide.get(r) for r in rids])\n\""},{"ord":32,"dur":175.96,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json"},{"ord":33,"dur":1076.37,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; node slides.js \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"||2026-10-27\" --template output/template-clean.pptx 2\u0026gt;\u0026amp;1 | tail -2 \u0026amp;\u0026amp; python3 rename_slides.py output/final.pptx output/final.pptx \u0026amp;\u0026amp; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json"},{"ord":34,"dur":177.66,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; echo \"=== audit_pptx ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/audit_pptx.py output/final.pptx --template output/template-clean.pptx --lock execution-lock.json --evidence-plan evidence-plan.json --report qa/structure.json; echo \"=== validate.py ===\" \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/validate.py output/final.pptx"},{"ord":35,"dur":2244.47,"rc":0,"perf":"matched","cat":"PPT 转换 (soffice)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; soffice --headless --convert-to pdf --outdir output output/final.pptx 2\u0026gt;\u0026amp;1 | tail -2; echo \"=== PDF 页数 ===\"; pdfinfo output/final.pdf 2\u0026gt;/dev/null | grep -E \"Pages|Page size\"; echo \"=== 生成缩略图 ===\"; pdftoppm -jpeg -r 100 output/final.pdf qa/slide 2\u0026gt;\u0026amp;1; ls -la qa/*.jpg 2\u0026gt;/dev/null | head"},{"ord":36,"dur":23.54,"rc":0,"perf":"matched","cat":"PDF 文本提取 (pdftotext)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; pdftotext output/final.pdf - 2\u0026gt;/dev/null | head -120"},{"ord":37,"dur":21.32,"rc":0,"perf":"matched","cat":"PDF 文本提取 (pdftotext)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; pdftotext output/final.pdf - 2\u0026gt;/dev/null | tail -45"},{"ord":38,"dur":133.06,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase deliver \u0026amp;\u0026amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase deliver \u0026amp;\u0026amp; echo \"=== 交付校验通过 ===\" \u0026amp;\u0026amp; ls -la output/final.pptx"},{"ord":39,"dur":3.85,"rc":0,"perf":"matched","cat":"目录列举 (ls)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; cp output/final.pptx \"output/大模型发展.pptx\" \u0026amp;\u0026amp; ls -la \"output/大模型发展.pptx\""}],"A-worker":[{"ord":1,"dur":9.39,"rc":2,"perf":"matched","cat":"环境探查 (find)","cmd":"find /run/aries-jiuwen-93cc9c73c55f7719 -maxdepth 8 -type d -name \"ppt-creation\" 2\u0026gt;/dev/null; echo \"---\"; ls -d /run/aries-jiuwen-93cc9c73c55f7719/home/data/*/ 2\u0026gt;/dev/null"},{"ord":2,"dur":3.05,"rc":2,"perf":"matched","cat":"目录列举 (ls)","cmd":"ls -la /run/aries-jiuwen-93cc9c73c55f7719/ 2\u0026gt;\u0026amp;1; echo \"===HOME===\"; ls -la /run/aries-jiuwen-93cc9c73c55f7719/home/ 2\u0026gt;\u0026amp;1; echo \"===DATA===\"; ls -la /run/aries-jiuwen-93cc9c73c55f7719/home/data/ 2\u0026gt;\u0026amp;1"},{"ord":3,"dur":736.03,"rc":0,"perf":"matched","cat":"环境探查 (find)","cmd":"find / -maxdepth 6 -type d -name \"ppt-creation\" 2\u0026gt;/dev/null; echo \"===SKILL.md===\"; find / -maxdepth 8 -name \"SKILL.md\" -path \"*ppt-creation*\" 2\u0026gt;/dev/null | head -20"},{"ord":4,"dur":143.83,"rc":0,"perf":"matched","cat":"环境探查 (find)","cmd":"pwd; echo \"===\"; ls -la /workspace/aries-case/ 2\u0026gt;\u0026amp;1; echo \"===HOME===\"; ls -la ~ 2\u0026gt;\u0026amp;1; echo \"===find skills anywhere===\"; find / -maxdepth 7 -type d -name \"skills\" 2\u0026gt;/dev/null | head -30"},{"ord":5,"dur":3.56,"rc":0,"perf":"matched","cat":"目录列举 (ls)","cmd":"ls -la /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ 2\u0026gt;\u0026amp;1; echo \"===ppt-creation===\"; ls -la /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/ 2\u0026gt;\u0026amp;1"},{"ord":6,"dur":1073.85,"rc":0,"perf":"matched","cat":"PPT 转换 (soffice)","cmd":"echo \"node: $(node -v 2\u0026gt;\u0026amp;1)\"; echo \"python3: $(python3 --version 2\u0026gt;\u0026amp;1)\"; echo \"soffice: $(soffice --version 2\u0026gt;\u0026amp;1 | head -1)\"; echo \"pdftoppm: $(pdftoppm -v 2\u0026gt;\u0026amp;1 | head -1)\"; echo \"===skill scripts===\"; ls /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.py /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.js 2\u0026gt;\u0026amp;1 | head -40"},{"ord":7,"dur":664.03,"rc":0,"perf":"matched","cat":"环境探查 (find)","cmd":"cd /workspace/aries-case \u0026amp;\u0026amp; mkdir -p projects/llm-development/{sources,analysis,assets,output,qa} \u0026amp;\u0026amp; echo \"目录已创建\"; echo \"===检查 pptxgenjs===\"; node -e \"console.log(require.resolve(\u0027pptxgenjs\u0027))\" 2\u0026gt;\u0026amp;1 | head -3; echo \"===检查 skill 内 node_modules===\"; find /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation -maxdepth 3 -name \"node_modules\" -type d 2\u0026gt;/dev/null; echo \"===全局 node 模块路径===\"; npm root -g 2\u0026gt;\u0026amp;1"},{"ord":8,"dur":68.82,"rc":0,"perf":"matched","cat":"目录列举 (ls)","cmd":"ls -la /opt/aries-presentation/ 2\u0026gt;\u0026amp;1; echo \"===node_modules===\"; ls /opt/aries-presentation/node_modules/ 2\u0026gt;\u0026amp;1 | head -30; echo \"===版本===\"; node -e \"console.log(require(\u0027/opt/aries-presentation/node_modules/pptxgenjs/package.json\u0027).version)\" 2\u0026gt;\u0026amp;1"},{"ord":9,"dur":9.4,"rc":0,"perf":"matched","cat":"目录列举 (ls)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/evidence-plan.schema.json . \u0026amp;\u0026amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/execution-lock.schema.json . \u0026amp;\u0026amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/design-spec-reference.md ./design-spec-reference.md \u0026amp;\u0026amp; echo \"schema 与 reference 已复制\" \u0026amp;\u0026amp; ls -la"},{"ord":10,"dur":134.4,"rc":0,"perf":"matched","cat":"文本输出 (echo)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation \u0026amp;\u0026amp; node \"$SKILL/scripts/validate-execution-lock.js\" execution-lock.json --phase design; echo \"=== EXIT $? ===\"; node \"$SKILL/scripts/validate-evidence-plan.js\" evidence-plan.json --phase design; echo \"=== EXIT $? ===\""},{"ord":11,"dur":71.66,"rc":0,"perf":"matched","cat":"文本输出 (echo)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation \u0026amp;\u0026amp; node \"$SKILL/scripts/validate-execution-lock.js\" execution-lock.json --phase design; echo \"=== EXIT $? ===\""},{"ord":12,"dur":5.45,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"grep -n \"module.exports\" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/components.js; echo \"===末尾===\"; tail -80 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/components.js"},{"ord":13,"dur":153.86,"rc":2,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2\u0026gt;\u0026amp;1; echo \"=== EXIT $? ===\"; ls -la output/ 2\u0026gt;\u0026amp;1"},{"ord":14,"dur":3.04,"rc":0,"perf":"matched","cat":"目录列举 (ls)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; mkdir -p sources analysis assets output qa \u0026amp;\u0026amp; ls -la"},{"ord":15,"dur":134.48,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2\u0026gt;\u0026amp;1; echo \"=== EXIT $? ===\"; ls -la output/ 2\u0026gt;\u0026amp;1"},{"ord":16,"dur":66.92,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py --help 2\u0026gt;\u0026amp;1 | head -60"},{"ord":17,"dur":722.79,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"技术研究部||2026-10-27\" 2\u0026gt;\u0026amp;1; echo \"=== EXIT $? ===\"; ls -la output/ 2\u0026gt;\u0026amp;1"},{"ord":18,"dur":647.76,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"技术研究部||2026-10-27\" --keep-workdir qa/workdir 2\u0026gt;\u0026amp;1 | tail -5; echo \"===查看 slide8.xml 问题行===\"; sed -n \u0027230,245p\u0027 qa/workdir/template/ppt/slides/slide8.xml 2\u0026gt;\u0026amp;1"},{"ord":19,"dur":830.04,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2\u0026gt;\u0026amp;1 \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"技术研究部||2026-10-27\" 2\u0026gt;\u0026amp;1; echo \"=== EXIT $? ===\"; ls -la output/"},{"ord":20,"dur":312.93,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation \u0026amp;\u0026amp; echo \"=== deliver 校验 ===\" \u0026amp;\u0026amp; node \"$SKILL/scripts/validate-execution-lock.js\" execution-lock.json --phase deliver; node \"$SKILL/scripts/validate-evidence-plan.js\" evidence-plan.json --phase deliver; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 \"$SKILL/scripts/qa_geometry.py\" output/final.pptx; echo \"GEOMETRY EXIT $?\"; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 \"$SKILL/scripts/qa_density.py\" output/final.pptx --lock execution-lock.json; echo \"DENSITY EXIT $?\""},{"ord":21,"dur":85.78,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation \u0026amp;\u0026amp; python3 \"$SKILL/scripts/audit_pptx.py\" output/final.pptx --template \"$SKILL/references/template.pptx\" --lock execution-lock.json --evidence-plan evidence-plan.json --report qa/structure.json 2\u0026gt;\u0026amp;1; echo \"AUDIT EXIT $?\""},{"ord":22,"dur":2.3,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation; echo \"=== qa_geometry duplicate-chrome 检测 ===\"; grep -n \"duplicate-chrome\\|Click to edit\\|Master\\|placeholder\\|ph \" \"$SKILL/scripts/qa_geometry.py\" | head -40"},{"ord":23,"dur":42.27,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\nzf = zipfile.ZipFile(\u0027/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx\u0027)\nprint(\u0027=== slideLayout7.xml 占位符/文字 ===\u0027)\nfor n in zf.namelist():\n    if \u0027slideLayout\u0027 in n and n.endswith(\u0027.xml\u0027):\n        xml = zf.read(n).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n        if \u0027layout7\u0027 in n or True:\n            pass\n# 列出所有 layout\nlayouts = [n for n in zf.namelist() if \u0027slideLayout\u0027 in n and n.endswith(\u0027.xml\u0027)]\nprint(\u0027layouts:\u0027, layouts)\nprint(\u0027=== 各 layout 含 ph 类型与文本 ===\u0027)\nfor n in layouts:\n    xml = zf.read(n).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n    phs = re.findall(r\u0027type=\\\"([a-zA-Z]+)\\\"\u0027, xml)\n    texts = re.findall(r\u0027\u0026lt;a:t\u0026gt;([^\u0026lt;]*)\u0026lt;/a:t\u0026gt;\u0027, xml)\n    print(n, \u0027| ph types:\u0027, sorted(set(phs)), \u0027| texts:\u0027, texts[:5])\nprint(\u0027=== slideMaster 文本 ===\u0027)\nmasters = [n for n in zf.namelist() if \u0027slideMaster\u0027 in n and n.endswith(\u0027.xml\u0027)]\nfor n in masters:\n    xml = zf.read(n).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n    texts = re.findall(r\u0027\u0026lt;a:t\u0026gt;([^\u0026lt;]*)\u0026lt;/a:t\u0026gt;\u0027, xml)\n    phs = re.findall(r\u0027type=\\\"([a-zA-Z]+)\\\"\u0027, xml)\n    print(n, \u0027| texts:\u0027, texts[:8], \u0027| ph types:\u0027, sorted(set(phs)))\n\""},{"ord":24,"dur":40.53,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\nzf = zipfile.ZipFile(\u0027/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx\u0027)\nxml = zf.read(\u0027ppt/slideLayouts/slideLayout7.xml\u0027).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n# 提取 sldLayout 属性\nm = re.search(r\u0027\u0026lt;p:sldLayout[^\u0026gt;]*\u0026gt;\u0027, xml)\nprint(\u0027sldLayout tag:\u0027, m.group(0) if m else \u0027NONE\u0027)\nprint(\u0027---blank ph---\u0027)\nfor ph in re.findall(r\u0027\u0026lt;p:ph[^\u0026gt;]*\u0026gt;\u0027, xml):\n    print(ph)\n\""},{"ord":25,"dur":5.31,"rc":0,"perf":"matched","cat":"内容检查 (grep)","cmd":"SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation; echo \"=== make_blank_template 中 showMasterSp / blank 相关 ===\"; grep -n \"showMasterSp\\|blank\\|slideLayout7\\|sldLayout\\|type=\" \"$SKILL/scripts/make_blank_template.py\" | head -30; echo \"=== qa_density.py 统计逻辑 ===\"; grep -n \"def \\|text\\|visual\\|EMPTY\\|\u0026lt;a:t\u0026gt;\\|inherit\\|layout\\|master\" \"$SKILL/scripts/qa_density.py\" | head -50"},{"ord":26,"dur":40.74,"rc":0,"perf":"matched","cat":"Python 内联检查","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; python3 -c \"\nimport zipfile, re\nzf = zipfile.ZipFile(\u0027output/final.pptx\u0027)\nslides = sorted([n for n in zf.namelist() if re.match(r\u0027ppt/slides/slide\\d+\\.xml$\u0027, n)], key=lambda x: int(re.search(r\u0027(\\d+)\u0027, x).group(1)))\ndef vis(t):\n    return sum(1.0 if ord(c)\u0026gt;0x2E80 else 0.5 for c in t if not c.isspace())\nfor n in slides:\n    xml = zf.read(n).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n    texts = re.findall(r\u0027\u0026lt;a:t\u0026gt;([^\u0026lt;]*)\u0026lt;/a:t\u0026gt;\u0027, xml)\n    total = round(vis(\u0027\u0027.join(texts)))\n    print(f\u0027{n}: chars={total}, 文本片段数={len(texts)}\u0027)\n    for t in texts[:8]:\n        print(\u0027   |\u0027, repr(t[:40]))\n\""},{"ord":27,"dur":1942.9,"rc":0,"perf":"matched","cat":"PPT 转换 (soffice)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; soffice --headless --convert-to pdf --outdir qa output/final.pptx 2\u0026gt;\u0026amp;1 | tail -2; echo \"=== pdftotext 检查占位符与重复 ===\"; pdftotext qa/final.pdf qa/final.txt 2\u0026gt;\u0026amp;1; grep -n \"Click to edit\\|Master title\\|Master text\" qa/final.txt | head -20; echo \"=== 每页文本预览 ===\"; python3 -c \"\nimport re\ntxt = open(\u0027qa/final.txt\u0027, encoding=\u0027utf-8\u0027).read()\npages = txt.split(chr(12))\nfor i, p in enumerate(pages, 1):\n    p = p.strip()\n    print(f\u0027--- 第{i}页 ({len(p)}字符) ---\u0027)\n    print(p[:200])\n    print()\n\""},{"ord":28,"dur":829.64,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2\u0026gt;\u0026amp;1 \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"技术研究部||2026-10-27\" 2\u0026gt;\u0026amp;1 | tail -6; echo \"=== EXIT $? ===\""},{"ord":29,"dur":871.18,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2\u0026gt;\u0026amp;1 \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"技术研究部||2026-10-27\" 2\u0026gt;\u0026amp;1 | tail -4; echo \"=== 实际各页字符数（按 slide 编号）===\"; python3 -c \"\nimport zipfile, re\nzf = zipfile.ZipFile(\u0027output/final.pptx\u0027)\ndef vis(t): return sum(1.0 if ord(c)\u0026gt;0x2E80 else 0.5 for c in t if not c.isspace())\nfor n in sorted([n for n in zf.namelist() if re.match(r\u0027ppt/slides/slide\\d+\\.xml$\u0027, n)], key=lambda x:int(re.search(r\u0027(\\d+)\u0027,x).group(1))):\n    xml = zf.read(n).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n    t = \u0027\u0027.join(re.findall(r\u0027\u0026lt;a:t\u0026gt;([^\u0026lt;]*)\u0026lt;/a:t\u0026gt;\u0027, xml))\n    print(f\u0027{n}: {round(vis(t))} 视觉字\u0027)\n\""},{"ord":30,"dur":876.56,"rc":0,"perf":"matched","cat":"PPT 生成 (node/pptxgenjs)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2\u0026gt;\u0026amp;1 \u0026amp;\u0026amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title \"大模型发展\" --cover-meta \"技术研究部||2026-10-27\" 2\u0026gt;\u0026amp;1 | tail -4; echo \"=== 各页字符数 ===\"; python3 -c \"\nimport zipfile, re\nzf = zipfile.ZipFile(\u0027output/final.pptx\u0027)\ndef vis(t): return sum(1.0 if ord(c)\u0026gt;0x2E80 else 0.5 for c in t if not c.isspace())\nfor n in sorted([n for n in zf.namelist() if re.match(r\u0027ppt/slides/slide\\d+\\.xml$\u0027, n)], key=lambda x:int(re.search(r\u0027(\\d+)\u0027,x).group(1))):\n    xml = zf.read(n).decode(\u0027utf-8\u0027,\u0027ignore\u0027)\n    t = \u0027\u0027.join(re.findall(r\u0027\u0026lt;a:t\u0026gt;([^\u0026lt;]*)\u0026lt;/a:t\u0026gt;\u0027, xml))\n    print(f\u0027{n}: {round(vis(t))} 视觉字\u0027)\n\""},{"ord":31,"dur":268.85,"rc":0,"perf":"matched","cat":"PPT 生成/后处理 (python3)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation \u0026amp;\u0026amp; echo \"=== qa_geometry ===\" \u0026amp;\u0026amp; python3 \"$SKILL/scripts/qa_geometry.py\" output/final.pptx 2\u0026gt;\u0026amp;1 | grep -E \"error|✗|duplicate|out-of-bounds|occlusion|text-collision\" | head -30; echo \"=== qa_density ===\" \u0026amp;\u0026amp; python3 \"$SKILL/scripts/qa_density.py\" output/final.pptx --lock execution-lock.json 2\u0026gt;\u0026amp;1; echo \"=== validate.py ===\" \u0026amp;\u0026amp; python3 \"$SKILL/scripts/opc/validate.py\" output/final.pptx 2\u0026gt;\u0026amp;1 | tail -5"},{"ord":32,"dur":975.68,"rc":0,"perf":"matched","cat":"PPT 转换 (soffice)","cmd":"cd /workspace/aries-case/projects/llm-development \u0026amp;\u0026amp; rm -f qa/final.pdf qa/final.txt \u0026amp;\u0026amp; soffice --headless --convert-to pdf --outdir qa output/final.pptx \u0026gt;/dev/null 2\u0026gt;\u0026amp;1; pdftotext qa/final.pdf qa/final.txt 2\u0026gt;\u0026amp;1; echo \"=== 占位符泄漏检查（应为空）===\"; grep -c \"Click to edit\\|Master title\\|Master text\\|‹#›\\|1/27/13\" qa/final.txt; echo \"=== 页数与每页首行 ===\"; python3 -c \"\ntxt = open(\u0027qa/final.txt\u0027, encoding=\u0027utf-8\u0027).read()\npages = [p.strip() for p in txt.split(chr(12)) if p.strip()]\nprint(\u0027实际内容页数:\u0027, len(pages))\nfor i,p in enumerate(pages,1):\n    first = p.split(chr(10))[0][:30]\n    print(f\u0027  第{i}页: {first}\u0027)\n\"; echo \"=== 文件信息 ===\"; ls -la output/final.pptx"}]};
+
+function render() {
+  var domain = document.getElementById('domainSelect').value;
+  var sort = document.getElementById('sortSelect').value;
+  var rows = cmdData[domain].slice();
+
+  if (sort === 'time') {
+    rows.sort(function(a, b) {
+      var da = (a.dur === null || a.dur === undefined) ? -1 : a.dur;
+      var db = (b.dur === null || b.dur === undefined) ? -1 : b.dur;
+      return db - da;
+    });
+  } else {
+    rows.sort(function(a, b) { return a.ord - b.ord; });
+  }
+
+  var html = '<table><thead><tr><th>#</th><th>耗时(ms)</th><th>退出码</th><th>perf</th><th>类型</th><th>完整命令</th></tr></thead><tbody>';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var rcTag = (r.rc === 0) ? '<span class="pill ok">0</span>'
+              : (r.rc !== null && r.rc !== undefined) ? '<span class="pill fail">' + r.rc + '</span>' : '—';
+    var dur = (r.dur === null || r.dur === undefined) ? '—' : r.dur;
+    var perf = (r.perf === 'matched') ? '<span class="pill ok">matched</span>' : '<span class="pill warn">' + r.perf + '</span>';
+    html += '<tr><td>' + r.ord + '</td><td class="mono">' + dur + '</td><td>' + rcTag +
+            '</td><td>' + perf + '</td><td>' + r.cat + '</td><td class="mono">' + r.cmd + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('cmdlist').innerHTML = html;
+  document.getElementById('cmdCount').textContent = '共 ' + rows.length + ' 条命令';
+}
+
+render();
+</script>
+</body>
+</html>
