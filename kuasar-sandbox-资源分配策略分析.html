@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kuasar-sandbox 资源分配策略分析 · 源码 + 部署实测 + 友商对比</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --ink:#1f2933; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --accent-soft:#eff6ff; --ok:#16a34a; --ok-soft:#f0fdf4;
+    --warn:#d97706; --warn-soft:#fffbeb; --diff:#ea580c; --diff-soft:#fff7ed; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); line-height:1.65; padding:32px 20px 72px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:1120px; margin:0 auto; }
+  h1 { font-size:25px; margin:0 0 6px; }
+  .subtitle { color:var(--muted); font-size:14px; margin:0 0 26px; }
+  h2 { font-size:19px; margin:38px 0 14px; padding-left:10px; border-left:4px solid var(--accent); }
+  h3 { font-size:15px; margin:22px 0 8px; color:#111827; }
+  h4 { font-size:13.5px; margin:16px 0 6px; color:#1f2937; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 22px; margin-bottom:14px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; background:#fff; }
+  th,td { border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top; }
+  th { background:#f9fafb; font-weight:600; color:#374151; }
+  td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .mono { font-family:Consolas,"Courier New",monospace; font-size:11.5px; }
+  code { font-family:Consolas,"Courier New",monospace; font-size:12px; background:#f1f5f9; padding:1px 5px; border-radius:4px; }
+  pre { background:#0f172a; color:#e2e8f0; padding:12px 14px; border-radius:8px; overflow:auto; font-size:12px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  .pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.ok { background:#dcfce7; color:#15803d; }
+  .pill.diff { background:#fee2e2; color:#b91c1c; }
+  .pill.warn { background:#fef3c7; color:#b45309; }
+  .pill.info { background:#dbeafe; color:#1d4ed8; }
+  .pill.gray { background:#f3f4f6; color:#4b5563; }
+  .note { color:var(--muted); font-size:12px; }
+  .tag { display:inline-block; font-size:11px; font-weight:600; color:#475569; background:#f1f5f9; border:1px solid #e2e8f0; padding:1px 7px; border-radius:5px; margin-right:4px; }
+  blockquote { margin:12px 0; padding:10px 16px; background:var(--accent-soft); border-left:4px solid var(--accent); border-radius:0 8px 8px 0; font-size:13px; }
+  blockquote.src { background:#f0f9ff; border-left-color:#0ea5e9; }
+  blockquote.obs { background:var(--warn-soft); border-left-color:var(--warn); }
+  ul { margin:6px 0 6px 2px; padding-left:22px; }
+  li { margin:4px 0; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media(max-width:860px){ .grid2{grid-template-columns:1fr;} }
+  .kpi { display:flex; gap:18px; flex-wrap:wrap; }
+  .kpi div { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:130px; }
+  .kpi b { display:block; font-size:19px; color:#111827; }
+  .kpi span { font-size:12px; color:var(--muted); }
+  .legend { font-size:12px; color:var(--muted); }
+  .verdict { font-weight:700; }
+  .toc { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px 20px; font-size:13px; }
+  .toc a { color:#2563eb; text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>kuasar-sandbox 沙箱资源分配策略分析</h1>
+<p class="subtitle">对象：<a href="https://github.com/kuasar-sandbox/kuasar-sandbox" target="_blank">github.com/kuasar-sandbox/kuasar-sandbox</a> 的 main 分支 · 覆盖 CPU 绑核 / 内存页型 / NUMA 亲和 / 管理面·数据面隔离，并对照三条华为 BMS 宿主机的部署实测 + 主流友商策略。分析日期 2026-11-05。</p>
+
+<div class="toc">
+<b>目录</b> &nbsp;
+<a href="#s1">一、项目定位</a> ·
+<a href="#s2">二、资源治理总架构</a> ·
+<a href="#s3">三、逐维度结论</a> ·
+<a href="#s4">四、华为部署实测对照</a> ·
+<a href="#s5">五、友商策略对比</a> ·
+<a href="#s6">六、结论与洞察</a> ·
+<a href="#s7">附：证据索引</a>
+</div>
+
+<h2 id="s1">一、项目定位：不是「容器运行时」，是高密度 MicroVM 沙箱平台</h2>
+<div class="card">
+  <p><b>kuasar-sandbox</b> 是华为 2026 年开源的 <b>高密度 MicroVM 沙箱平台</b>，面向 AI Agent / Serverless / Code Interpreter / RL 负载（topics 含 <span class="tag">ai-agent</span><span class="tag">e2b</span><span class="tag">kvm</span><span class="tag">microvm</span><span class="tag">snapshot</span>）。它与 2023 年华为云开源的经典容器运行时 <code>kuasar-io/kuasar</code> 是<b>两个不同项目</b>——前者是「E2B 兼容的独立 guest 内核沙箱」，后者是「多沙箱容器运行时（containerd Sandbox API）」。</p>
+  <p>本仓库是「系统级设计 + 聚合发布」的 canonical 仓库，实现拆在 5 个组件仓库：</p>
+  <table>
+    <thead><tr><th>组件</th><th>资源相关职责</th><th>关键二进制 / 包</th></tr></thead>
+    <tbody>
+      <tr><td><code>sandboxer</code></td><td><b>单沙箱资源执行</b>：cgroup、virtio-balloon、VMM 生命周期、on-demand 内存加载</td><td><code>sandbox-ctl</code>、<code>sandbox-init</code>、补丁版 <code>cloud-hypervisor</code>；<code>pkg/resctl</code>/<code>pkg/resource</code>/<code>pkg/config</code></td></tr>
+      <tr><td><code>orchestrator</code></td><td><b>节点资源准入 + 集群放置</b>：Reservation Controller、共享池、水位线、place</td><td><code>node-ctl</code>、<code>cluster-ctl</code>；<code>internal/nodectl</code></td></tr>
+      <tr><td><code>accelerator</code></td><td>镜像/快照数据访问、稀疏存储、按需加载</td><td><code>cache-ctl</code>/<code>store-ctl</code> 等（存储面，不涉及 CPU 分配）</td></tr>
+      <tr><td><code>connector</code></td><td>eBPF/TC 网络、TAP 交接（数据面，不涉及 CPU 分配）</td><td><code>connector-ctl</code></td></tr>
+      <tr><td><code>guest-runtime</code></td><td>guest 内核 + 运行时镜像</td><td><code>vmlinux</code> + <code>sandbox-runtime.bundle</code></td></tr>
+    </tbody>
+  </table>
+  <p class="note">设计原则明确「Separate control and execution」：<code>orchestrator</code> 只管准入和共享池，<code>sandboxer</code> 才执行单个沙箱的 cgroup/balloon/VMM 操作——节点控制器<b>不直接改沙箱 cgroup、不调 balloon</b>。</p>
+</div>
+
+<h2 id="s2">二、资源治理总架构：一个「内存多路复用」闭环</h2>
+<div class="card">
+  <p>kuasar-sandbox 的资源模型不是「每个沙箱硬占一份 CPU/内存」，而是面向「Agent 负载长时间等待、短时突发」的高密度模型。内存控制拆成<b>两个独立流</b>和<b>三个角色</b>：</p>
+  <table>
+    <thead><tr><th>角色</th><th>机制</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><b>Balloon / Budget</b></td><td>virtio-balloon 膨胀/收缩</td><td>「让 idle 沙箱交回 guest 内存」的执行器；deflate 才释放 Budget</td></tr>
+      <tr><td><b>NodeReservation</b></td><td>节点级分配账本</td><td>跨沙箱复用的记账；只有本地 shrink 落账为更小的 reservation，内存才可被他人复用</td></tr>
+      <tr><td><b>memory.high</b></td><td>cgroup v2 宿主节流</td><td>宿主侧节流边界 + 压力反馈，不是硬上限、不是回收所有者</td></tr>
+    </tbody>
+  </table>
+  <blockquote class="src">源码结论：增长「先向节点申请 Grant → 抬 <code>memory.high</code> → balloon deflate」；收缩「先 balloon inflate → 观察安全 → 降 <code>memory.high</code> → 释放 Reservation」。增长优先保安全、收缩保守滞后。<code>Capacity</code> 是单沙箱上限，<code>NodeReservation</code> 是节点当前承诺量，<b>二者刻意分离</b>——这是超卖（oversubscription）的核心。</blockquote>
+</div>
+
+<h2 id="s3">三、逐维度结论（源码证据驱动）</h2>
+
+<div class="card">
+  <h3>3.1 CPU：<span class="pill diff">不绑核</span>，只做 <code>cpu.weight</code> 相对权重</h3>
+  <p>kuasar-sandbox 对 CPU 的策略是<b>三不</b>：不绑核、不硬配额、不做 NUMA 亲和。CPU 只有两个量：</p>
+  <table>
+    <thead><tr><th>配置字段</th><th>语义</th><th>实现</th></tr></thead>
+    <tbody>
+      <tr><td><code>resources.capacity.cpu</code></td><td>guest 看到的 vCPU 数（决定 vCPU 拓扑）</td><td>传给 Cloud Hypervisor 的 boot/max vcpus</td></tr>
+      <tr><td><code>resources.allocatable.cpu</code></td><td>「可分配的相对调度规格」</td><td>映射为 cgroup v2 <code>cpu.weight</code>（相对权重）</td></tr>
+    </tbody>
+  </table>
+  <blockquote class="src">
+    sandbox.md（原文）：<i>「Capacity CPU determines vCPU topology. In cgroup mode, allocatable CPU maps to <code>cpu.weight</code>; without a cgroup it must equal capacity CPU, so a separate fractional allocation cannot be expressed.」</i><br>
+    node-resource.md §7.2（原文）：<i>「cpuAllocatable: the relative scheduling specification mapped to <code>cpu.weight</code>, <b>without a hard fractional-core quota or unconditional performance guarantee</b>.」</i>
+  </blockquote>
+  <p>关键含义：</p>
+  <ul>
+    <li><b>无</b> <code>cpuset.cpus</code> 绑定、<b>无</b> <code>cpu.max</code> 硬配额（上限为 <code>max</code>）、<b>无</b> exclusive cpu partition。</li>
+    <li>Cloud Hypervisor v52 虽支持 <code>--cpus affinity=[vcpu@[host_cpus]]</code>（逐 vCPU 绑核），但 sandboxer 的配置 schema 里<b>没有暴露任何 affinity 字段</b>，全文 grep 无 <code>affinity</code>/<code>cpuset</code>/<code>topology</code> 绑定项。</li>
+    <li>多个沙箱的 vCPU 线程由宿主 CFS 调度，<b>可自由漂移并互相重叠</b>，隔离效果仅来自 cpu.weight 的相对权重。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>3.2 内存页型：<span class="pill warn">小页 + THP</span>，非静态大页；用 balloon 回收</h3>
+  <p>内存按「固定上限 + 气球回收 + 宿主节流」三层管理，配置结构：</p>
+  <pre><code>resources:
+  capacity:   { cpu: 2, memory: 2GiB }   # capacity.memory = 固定 VM 上限（Capacity）
+  allocatable: { memory: 256MiB }        # 默认 headroom，balloon 收缩目标（不是 Budget、不是 free）
+  startup:    { memory: 2GiB }           # 首个可信冷启动报告前的 headroom
+  overhead:   { memory: 32MiB }          # 宿主 VMM 开销（节点记账用）
+  watermark_high: { ratio: 0.875 }       # memory.high 水位比例</code></pre>
+  <ul>
+    <li><b>大页</b>：schema 全文无 <code>hugepages</code> 字段；Cloud Hypervisor 的 <code>--memory hugepages=on</code> 能力<b>未被启用</b>。内存凭 mmap + 宿主 THP（<code>madvise MADV_HUGEPAGE</code>)自然 2M 折叠。</li>
+    <li><b>反大页</b>：sandbox-ctl 二进制 strings 里存在 <code>madvise NOHUGEPAGE</code> 调用（对特定 vhost/uffd 区域主动禁 THP）。</li>
+    <li><b>回收</b>：idle 沙箱经 <code>balloon inflate</code> 交回内存 → 落账更小 reservation → 供 burst 沙箱复用（多路复用，不硬占 Capacity）。</li>
+  </ul>
+  <blockquote class="obs">部署实测：三条宿主机 <code>/proc/meminfo</code> 均为 <code>HugePages_Total=0</code>（无预分配大页），<code>AnonHugePages</code> 非零（THP 生效）。与源码结论完全一致。</blockquote>
+</div>
+
+<div class="card">
+  <h3>3.3 NUMA 亲和：<span class="pill diff">无</span>（结构性跨 NUMA）</h3>
+  <ul>
+    <li>schema 与代码<b>均无</b> NUMA 相关字段：不向 Cloud Hypervisor 传 <code>--memory-zone host_numa_node=</code>（mbind 绑内存节点）、不传 <code>--numa</code>（guest SRAT/SLIT 模拟）。</li>
+    <li>guest 视角单 NUMA（此前采集 dmesg 报 <code>No NUMA configuration found</code> + <code>Faking a node</code>），不感知宿主机拓扑。</li>
+    <li>vCPU 不绑核 + 内存不绑节点 ⇒ 沙箱的 vCPU 与内存物理位置不可控，<b>跨 NUMA 访问是结构性必然</b>。</li>
+  </ul>
+  <blockquote class="obs">部署实测：x86 宿主机 <code>cpuset.cpus.effective=8-511</code> 横跨 node0/node1，<code>cpuset.mems.effective=0-1</code> 不限制任何节点；ARM 宿主机 <code>8-143/8-151</code> 配 <code>0-3</code> 全节点。单个 runner 的 <code>memory.numa_stat = anon N0=118MB N1=0</code> 只是分配时自然落位，非强制亲和。</blockquote>
+</div>
+
+<div class="card">
+  <h3>3.4 管理面 / 数据面 CPU 隔离：<span class="pill warn">池级 cpuset</span>，非独占 partition</h3>
+  <p>kuasar-sandbox 的 cgroup 层级（cgroup v2）按角色分区，但<b>只做「池级 cpuset 圈地」，不做「per-sandbox 独占绑核」</b>：</p>
+  <pre><code>/sys/fs/cgroup/sandbox.slice/
+├── cpuset.cpus = 8-511          # 整个沙箱池：跳过 0-7 这 8 个核给宿主系统/管理面
+├── cpuset.mems = 0-1            # 不限制 NUMA 节点
+├── sandbox-platform.slice/      # conductor / proxy（管理面 + 数据面）→ 也在这个池内
+├── sandbox-runner.slice/        # 每个业务沙箱一个 sandbox-runner@sr-*.service（vCPU+业务）
+└── sandbox-builder.slice/       # 模板构建（build）池</code></pre>
+  <ul>
+    <li><b>有</b>：把 0-7 这 8 个核从「沙箱视角」挖掉，留给宿主 OS / <code>nacre-agent</code> / 云监控 agent。</li>
+    <li><b>没有</b>：<code>cpuset.cpus.exclusive</code> / <code>cpuset.cpus.partition(isolated)</code> / <code>isolcpus</code> —— 系统进程理论上仍可被调度到 8-511，与沙箱争抢。管理面(<code>conductor</code>)与数据面(<code>proxy</code>)也<b>不独占</b>独立核。</li>
+    <li>节点级 <code>nacre-agent</code> 用 <code>--sandbox-limited-milli-cpus</code>/<code>--sandbox-limited-memory-mib</code> 控制<b>总量配额</b>（如 512 核机只给沙箱 90%），不是空间隔离。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>3.5 节点准入：Reservation Controller（<code>node-ctl</code>）</h3>
+  <p>节点级把内存当作「可回收、可复用」的共享池，配一套水位分区 + 令牌桶：</p>
+  <table>
+    <thead><tr><th>机制</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>Physical / HostReserved / PostHostBudget</code></td><td>物理内存 → 扣除宿主保留 → 可分配预算</td></tr>
+      <tr><td><code>AllocatablePool</code></td><td>再扣 <code>operational_margin_factor</code>(10%) 后的可分配池</td></tr>
+      <tr><td>Zone：green→yellow→red→critical</td><td>按 Reserved 占池比例分水位（low 70% / high 85% / critical = P−emergency 5%）</td></tr>
+      <tr><td>StartupPool / 准入令牌桶</td><td>限制并发创建/恢复的聚合内存；<code>admission rate/burst</code> 控创建洪峰</td></tr>
+      <tr><td>Grant（RequestBudget）/ Cooldown</td><td>运行时增长先记账后放行；未批满则按 cooldown 重试</td></tr>
+    </tbody>
+  </table>
+  <p class="note">设计目标：「高密度 = 提高有用利用率，且<b>不把 OOM 当作调度手段</b>」。Red/Critical 区拒绝新创建、保留恢复与搬出，用 balloon + 暂停（pause → snapshot）把 long-idle 沙箱按需压到持久态。</p>
+</div>
+
+<h2 id="s4">四、华为部署实测对照（三条 BMS 宿主机）</h2>
+<div class="card">
+  <p>kuasar-sandbox 的华为商用部署形态即实测的 <code>nacre-agent</code> / <code>sandbox-ctl</code> / <code>node-ctl</code> / <code>connector-ctl</code>（<code>--sandbox-runtime-type=E2B</code>、<code>--agent-type=BMS</code>）。宿主机实测与源码结论<b>逐条互证</b>：</p>
+  <table>
+    <thead><tr><th>宿主机</th><th>架构/核数</th><th>沙箱 cpuset</th><th>mems</th><th>大页</th><th>单沙箱 cgroup</th></tr></thead>
+    <tbody>
+      <tr><td><code>10.30.33.139</code></td><td>x86_64 · 512 核 · 2 NUMA</td><td><code>8-511</code>（跳 0-7）</td><td><code>0-1</code></td><td class="num">Total=0</td><td><code>cpuset.cpus</code>=空 · <code>cpu.max</code>=max · <code>cpu.weight</code>=100 · <code>memory.max</code>=max</td></tr>
+      <tr><td><code>10.30.40.192</code></td><td>ARM · 160 核 · 4 NUMA</td><td><code>8-143</code></td><td><code>0-3</code></td><td class="num">Total=0</td><td>同上（继承池级）</td></tr>
+      <tr><td><code>10.30.47.12</code></td><td>ARM · 160 核 · 4 NUMA</td><td><code>8-151</code></td><td><code>0-3</code></td><td class="num">Total=0</td><td>同上（继承池级）</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li><b>绑核 = 否</b>：单 runner <code>cpuset.cpus</code> 为空（继承池级 8-511），无 exclusive partition。</li>
+    <li><b>大页 = 否</b>：<code>HugePages_Total=0</code>，仅 THP；字符串含 <code>madvise NOHUGEPAGE</code>。</li>
+    <li><b>NUMA = 否</b>：<code>cpuset.mems</code> 覆盖全节点，vCPU 漂移，跨 NUMA 必然。</li>
+    <li><b>隔离 = 池级</b>：仅 8 核留宿主（0-7），数据面/管理面不独占；观察期 guest 内 <code>%steal=0</code> 未现明显抢占。</li>
+  </ul>
+</div>
+
+<h2 id="s5">五、友商策略对比</h2>
+<div class="card">
+  <p>下表把「能真绑核 + 真 NUMA 透传」的能力边界铺开（来源见附注）。核心规律：<b>能做的只有 Kata(QEMU 路径) 和 Cloud Hypervisor 原生；Firecracker/gVisor 刻意把绑核/NUMA 交还宿主编排层</b>。</p>
+  <table>
+    <thead><tr><th>对象</th><th>① CPU 绑核</th><th>② 内存页型</th><th>③ NUMA 亲和</th><th>④ 管理面/数据面隔离</th></tr></thead>
+    <tbody>
+      <tr><td><b>kuasar-sandbox</b></td><td><span class="pill diff">否</span>（cpu.weight）</td><td><span class="pill warn">小页+THP</span>（无大页）</td><td><span class="pill diff">否</span></td><td><span class="pill warn">池级 cpuset</span>（8 核留宿主）</td></tr>
+      <tr><td>Kata 3.x（QEMU/Go runtime）</td><td><span class="pill warn">可选</span> <code>enable_vcpus_pinning</code></td><td><span class="pill ok">三档</span> 小页/THP/静态大页</td><td><span class="pill ok">可选</span> <code>enable_numa</code> + policy=bind</td><td>依赖 K8s CPU Manager static</td></tr>
+      <tr><td>Kata 3.x（CLH/Dragonball）</td><td><span class="pill gray">未接线/需查证</span></td><td>小页/THP</td><td><span class="pill gray">runtime-rs 尚不支持</span></td><td>同上</td></tr>
+      <tr><td>Firecracker（AWS 生产）</td><td>本体否；宿主 <code>cpuset.cpus</code>+<code>partition isolated</code></td><td>匿名/memfd，<b>无大页无 balloon</b></td><td>宿主 <code>cpuset.mems</code> 钉节点</td><td><span class="pill ok">外部</span> cgroup partition isolated</td></tr>
+      <tr><td>gVisor（runsc）</td><td><span class="pill diff">无</span> vCPU/绑核</td><td>单 memfd + 宿主 THP</td><td><span class="pill diff">无</span></td><td>Core Scheduling（SMT 隔离）</td></tr>
+      <tr><td>Cloud Hypervisor（VMM 原生）</td><td><span class="pill ok">可选</span> <code>--cpus affinity</code></td><td>小页+<code>thp=on</code>；可选 <code>hugepages</code>/prefault/KSM</td><td><span class="pill ok">是</span> <code>host_numa_node</code>+<code>--numa</code></td><td>无 partition（由宿主承担）</td></tr>
+      <tr><td>E2B（Firecracker 系）</td><td><span class="pill gray">未公开</span></td><td>Firecracker memfd，无 balloon</td><td><span class="pill gray">未公开</span></td><td><span class="pill gray">未公开</span></td></tr>
+    </tbody>
+  </table>
+  <p class="legend">要点：① Cloud Hypervisor 明明内置 <code>affinity</code>/<code>hugepages</code>/<code>host_numa_node</code>/<code>numa</code>，kuasar-sandbox 却<b>一个都没启用</b>——这是「高密度软隔离」的<b>设计取向</b>，而非能力缺失。② Kata QEMU 路径是唯一「绑核+NUMA+大页」开箱即用的容器运行时，但依赖 K8s Guaranteed pod + static policy。③ Firecracker 走的「外部 cgroup partition isolated」正是 kuasar-sandbox 目前<b>没有做</b>的那一步。</p>
+</div>
+
+<h2 id="s6">六、结论与洞察</h2>
+<div class="card">
+  <div class="kpi">
+    <div><b>不绑核</b><span>cpu.weight 权重</span></div>
+    <div><b>无静态大页</b><span>小页 + THP</span></div>
+    <div><b>无 NUMA 亲和</b><span>结构性跨 NUMA</span></div>
+    <div><b>池级 cpuset</b><span>8 核留宿主</span></div>
+    <div><b>内存多路复用</b><span>balloon + reservation</span></div>
+  </div>
+  <ol>
+    <li><b>定位是「高密度软隔离」，不是「性能确定性」。</b> kuasar-sandbox 的 CPU 只有「vCPU 数」和「cpu.weight 相对权重」两个旋钮，把「绑核/NUMA/大页」全部让渡给宿主机 CFS + THP，换取更高的并发密度（官方 851s→380s x86、802s→333s ARM 的固定并发对照即这种设计的收益）。</li>
+    <li><b>资源模型的创新点在「内存侧」而非「CPU 侧」。</b> 它比 Firecracker（无 balloon、不回收）激进：用 virtio-balloon + NodeReservation 账本 + memory.high 节流，把 idle 内存跨沙箱复用，且刻意「不用 OOM 当调度器」。</li>
+    <li><b>CPU 空间隔离是明确的留白。</b> 唯一隔离是「池级 cpuset 把 0-7 留宿主」，但没有 exclusive cpu partition / isolcpus，多沙箱 vCPU 必然互相重叠、与系统进程争抢 8-511。若未来要确定性延迟，这就是第一个要补的点（参考 Firecracker 的 <code>cgroup partition isolated</code> 实践）。</li>
+    <li><b>与火山/华为对照现象的呼应。</b> 此前命令耗时对照里「琐碎小命令正负互现、离群点抖动大」，与「vCPU 不绑核 + 跨 NUMA」的软隔离模型自洽——非独占 CPU + 跨 NUMA 会放大单次短命令的波动。</li>
+    <li><b>若要升级：</b> 能力都已存在于 Cloud Hypervisor 层，只需 sandboxer 暴露出 <code>--cpus affinity</code>（绑核）、<code>--memory hugepages</code>（大页）、<code>--memory-zone host_numa_node</code>+<code>--numa</code>（NUMA），再加编排层的 exclusive cpuset 分区即可覆盖当前全部缺口。</li>
+  </ol>
+</div>
+
+<h2 id="s7">附：证据索引</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>结论</th><th>证据来源</th></tr></thead>
+    <tbody>
+      <tr><td>CPU 用 cpu.weight、无硬配额无绑核</td><td><code>orchestrator/docs/node-resource.md</code> §7.2；<code>sandboxer/docs/sandbox.md</code>（「allocatable CPU maps to cpu.weight」）</td></tr>
+      <tr><td>内存 balloon+memory.high+reservation 多路复用</td><td><code>node-resource.md</code> §1.2/§3.1/§4</td></tr>
+      <tr><td>配置无 affinity/hugepages/numa 字段</td><td>sandbox.md 全文 grep 无匹配；<code>sandbox-ctl config --template</code> 仅 capacity/allocatable/startup/overhead</td></tr>
+      <tr><td>部署实测：不绑核/无大页/无 NUMA/池级 cpuset</td><td>三台宿主机 <code>/sys/fs/cgroup/sandbox.slice/*</code> + <code>/proc/meminfo</code> + <code>strings sandbox-ctl</code></td></tr>
+      <tr><td>友商策略</td><td>Kata/Firecracker/CLH/gVisor/E2B 官方 docs 与 issue（详见调研纪要）</td></tr>
+    </tbody>
+  </table>
+  <p class="note">说明：本报告「源码结论」来自 main 分支 docs 与公开 schema；「部署实测」来自三条华为 BMS 宿主机（<code>10.30.33.139</code>/<code>40.192</code>/<code>47.12</code>，经跳板机 root 探查）。Cloud Hypervisor 版本 v52.0.0-HCE。</p>
+</div>
+
+</div>
+</body>
+</html>
