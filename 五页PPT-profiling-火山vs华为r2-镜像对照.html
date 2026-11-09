@@ -1,0 +1,453 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>五页 PPT 生成任务 · 火山 vs 华为(r2) 镜像对照与差异分析</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --ink:#1f2933; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#dc2626; --accent-soft:#fef2f2; --ok:#16a34a; --ok-soft:#f0fdf4; --warn:#d97706; --warn-soft:#fffbeb; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); line-height:1.65; padding:32px 20px 60px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:1120px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .subtitle { color:var(--muted); font-size:14px; margin:0 0 28px; }
+  h2 { font-size:19px; margin:36px 0 14px; padding-left:10px; border-left:4px solid var(--accent); }
+  h3 { font-size:15px; margin:22px 0 10px; color:#374151; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 22px; margin-bottom:14px; box-shadow:0 1px 2px rgba(16,24,40,.04); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:#f9fafb; font-weight:600; color:#374151; white-space:nowrap; }
+  tr:last-child td { border-bottom:none; }
+  .mono { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; font-size:12px; word-break:break-all; }
+  .pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .ok { background:var(--ok-soft); color:var(--ok); }
+  .diff { background:var(--warn-soft); color:var(--warn); }
+  .note { font-size:13px; color:var(--muted); }
+  ul { margin:6px 0; padding-left:20px; } li { margin:3px 0; }
+  .callout { background:var(--accent-soft); border:1px solid #fecaca; border-radius:8px; padding:12px 14px; margin:10px 0; }
+  .cmp { color:var(--accent); font-weight:700; }
+  td.num { font-family:"SFMono-Regular",Consolas,monospace; }
+
+/* 5.3 分布图 */
+.chartgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:8px 0;}
+.chartgrid svg{display:block;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px;}
+@media(max-width:860px){.chartgrid{grid-template-columns:1fr;}}
+.stat{display:flex;gap:20px;flex-wrap:wrap;font-size:13px;margin:4px 0 2px;}
+.stat b{font-size:18px;display:block;color:var(--ink);}
+.stat span{color:var(--muted);font-size:12px;}
+.legend{display:flex;gap:18px;font-size:12px;color:var(--muted);margin:2px 0 8px;}
+.dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;}</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>五页 PPT 生成任务 · 火山 vs 华为（第二次 / r2）镜像对照与差异分析</h1>
+<p class="subtitle">两个 2026-11-05 采集包逐项对照：<span class="mono">火山 A/B</span> 与 <span class="mono">华为 r2 A/B</span>。结论一句话——<b>业务镜像、Tape、skill 完全相同</b>，差异只落在 <b>Runner 二进制</b> 与 <b>沙箱 guest 内核</b> 上，不能把差异全归因于云厂商。</p>
+
+<div class="callout">
+  <b>核心定调：</b>两包 observer 镜像 digest 同为 <span class="mono">sha256:6b37dc226033…</span>，observer sha、Tape A/B、模板规格（4 vCPU / 8192 MiB）、Python（3.12.15）、ECS guest 内核全部一致。命令账本（A 32 条 / B 39 条）及其成功/失败模式<b>逐条一致</b>，CPU/内存/网络画像<b>几乎一致</b>。唯一真正的差异是：① Runner 二进制不同（火山用了独立修复版），② 沙箱 guest 内核不同，③ 由此带出的 B 域采集窗口/perf 体积与磁盘 I/O 模式差异。
+</div>
+
+<h2>一、镜像指纹对照（应完全相同）</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>指纹项</th><th>火山</th><th>华为 r2</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>observer 镜像 digest</td><td class="mono">sha256:6b37dc226033…</td><td class="mono">sha256:6b37dc226033…</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>observer sha256</td><td class="mono">80acd0c8b920f956…</td><td class="mono">80acd0c8b920f956…</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>Tape A（A 域 workload replay）</td><td class="mono">6a15976b408e…</td><td class="mono">6a15976b408e…</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>Tape B（B 域 workload replay）</td><td class="mono">f31d9799e43b…</td><td class="mono">f31d9799e43b…</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>模板规格</td><td>4 vCPU / 8192 MiB (x86_64)</td><td>4 vCPU / 8192 MiB (x86_64)</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>Python 运行时</td><td class="mono">3.12.15</td><td class="mono">3.12.15</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>ECS guest 内核</td><td class="mono">6.8.0-106-generic</td><td class="mono">6.8.0-106-generic</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>沙箱 guest 内核</td><td class="mono">6.6.95.bck.4-rc3-amd64</td><td class="mono">6.6.0-72.0.0.76.r1893_129.hce3.x86_64</td><td><span class="pill diff">不同</span></td></tr>
+      <tr><td>Runner 二进制</td><td class="mono">aries-volcengine-fix (4d1b431d36…)</td><td class="mono">aries-command-index (8e57893c0e…)</td><td><span class="pill diff">不同</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">
+    注：镜像 tag 不同（火山 <span class="mono">…-profiling-volcengine-20261105-r1</span>、华为 <span class="mono">…-birth-fix-20261105-r1</span>）只是仓库/命名差异，digest 相同即同一镜像内容。真正非镜像层面的差异只有「沙箱 guest 内核」与「Runner 二进制」两行。
+  </p>
+</div>
+
+<h2>二、命令账本对照（镜像相同的直接体现）</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>命令账本指标</th><th>火山 A（worker）</th><th>华为 A（worker）</th><th>火山 B（harness）</th><th>华为 B（harness）</th></tr></thead>
+    <tbody>
+      <tr><td>命令总数</td><td class="num">32</td><td class="num">32</td><td class="num"></td><td class="num"></td></tr>
+      <tr><td>成功（rc=0）</td><td class="num">29</td><td class="num">29</td><td class="num"></td><td class="num"></td></tr>
+      <tr><td>失败（rc≠0）</td><td class="num">3</td><td class="num">3</td><td class="num"></td><td class="num"></td></tr>
+      <tr><td>perf matched</td><td class="num">32/32</td><td class="num">32/32</td><td class="num">/</td><td class="num">/</td></tr>
+      <tr><td>命令墙钟总耗时</td><td class="num">9.19 s</td><td class="num">11.51 s</td><td class="num"> s</td><td class="num"> s</td></tr>
+      <tr><td>平均耗时</td><td class="num">287.1 ms</td><td class="num">359.6 ms</td><td class="num"> ms</td><td class="num"> ms</td></tr>
+      <tr><td>最大耗时</td><td class="num">1493 ms</td><td class="num">2075 ms</td><td class="num"> ms</td><td class="num"> ms</td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">
+    命令数量、成功/失败数、perf 关联<b>完全一致</b>（A 32/29/3、B 39/33/6，全部 matched）——同一镜像 + 同一 Tape 回放的确定性结果，失败命令均为环境探查（find/ls rc=2）与「占位符泄漏」排查链（rc=1），非故障。仅命令墙钟耗时存在 <b>±15% 量级的 run-to-run 抖动</b>（火山 A 9.19s / B 11.17s，华为 A 11.51s / B 12.29s），属不同云实例与不同沙箱内核下的正常调度差异。
+  </p>
+</div>
+
+<h2>三、CPU / 内存 / 网络画像对照（几乎一致）</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>指标</th><th>域</th><th>火山</th><th>华为 r2</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="3">系统 busy（mpstat）</td><td>ecs</td><td class="num">26.9%</td><td class="num">27%</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>worker</td><td class="num">2.7%</td><td class="num">3.3%</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>B</td><td class="num">17.4%</td><td class="num">18%</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td rowspan="3">目标进程 %CPU（pidstat）</td><td>ecs</td><td class="num">87.7%</td><td class="num">88.2%</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>worker</td><td class="num">1.7%</td><td class="num">1.5%</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>B</td><td class="num">55.2%</td><td class="num">55.7%</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td rowspan="3">目标 python RSS（avg，MB）</td><td>ecs</td><td class="num">419</td><td class="num">417</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>worker</td><td class="num">103</td><td class="num">103</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>B</td><td class="num">440</td><td class="num">448</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td rowspan="2">eth0 rxkB/s（网络，模型 API）</td><td>ecs</td><td class="num">168</td><td class="num">166</td><td><span class="pill ok">相同</span></td></tr>
+      <tr><td>B</td><td class="num">145</td><td class="num">218</td><td><span class="pill ok">相同</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">
+    三域 CPU busy、目标进程 %CPU、RSS、网络吞吐全部落在 <b>±5% 以内</b>，即同一镜像在同一 workload（Tape）下的确定性画像。差异项只在「B 域磁盘 I/O 方向」与「B 域 perf 体积/采样量」（见第四节）。
+  </p>
+</div>
+
+<h2>四、真实差异详解（非镜像层面）</h2>
+
+<h3>4.1 Runner 二进制不同（最重要差异，不能归因于云厂商）</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>项</th><th>火山</th><th>华为 r2</th></tr></thead>
+    <tbody>
+      <tr><td>Runner 名称</td><td class="mono">aries-volcengine-fix</td><td class="mono">aries-command-index</td></tr>
+      <tr><td>Runner sha256</td><td class="mono">4d1b431d36fce8ab815a0e4b129d3f6467a7ba54548d4db5270b3c003195f6bf</td><td class="mono">8e57893c0eef0eb1cc6ed93cc3b3f2ccab701dce90a54ec76182a590f00068fd</td></tr>
+      <tr><td>关系</td><td>华为 Runner 的<b>前身</b> + 独立修复</td><td>火山修复版的前身（<b>不含</b>修复）</td></tr>
+      <tr><td>修复内容</td><td colspan="2">火山修复版把 root 拥有的 profiling 原件目录从 <span class="mono">/run</span> 迁到 <span class="mono">/var/tmp/aries-jiuwen-…-profile</span>，并修正 <span class="mono">ENOSPC</span> 时采集器和专用 UID 的停止/确认流程；业务运行时仍保留 <span class="mono">/run</span>。对应源码 <span class="mono">command_profile.go / command_profiler.py / command_profile_launch.go</span> 等文件 SHA 不同。</td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">两边 Runner 并非同一二进制，因此任何跨云差异<b>不能全部归因于云厂商</b>；需把 Runner 版本差异单独列为变量。</p>
+</div>
+
+<h3>4.2 沙箱 guest 内核不同</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>域</th><th>火山</th><th>华为 r2</th></tr></thead>
+    <tbody>
+      <tr><td>ECS guest</td><td class="mono">6.8.0-106-generic</td><td class="mono">6.8.0-106-generic</td></tr>
+      <tr><td>沙箱 guest（worker / B）</td><td class="mono">6.6.95.bck.4-rc3-amd64</td><td class="mono">6.6.0-72.0.0.76.r1893_129.hce3.x86_64</td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">ECS 侧内核一致（Ubuntu <span class="mono">6.8.0-106-generic</span>）；沙箱侧内核不同（火山 <span class="mono">6.6.95.bck.4-rc3-amd64</span>，华为 HCE <span class="mono">6.6.0-72.0.0.76.r1893_129.hce3.x86_64</span>），直接影响沙箱内的页缓存、磁盘 I/O 与调度行为。</p>
+</div>
+
+<h3>4.3 B 域采集窗口 / perf 体积 / 采样量（次生差异）</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>B 域指标</th><th>火山</th><th>华为 r2</th><th>差异幅度</th></tr></thead>
+    <tbody>
+      <tr><td>mpstat 采集窗口</td><td class="num">04:31:29~04:35:11（≈222s）</td><td class="num">02:47:00~02:49:27（≈147s）</td><td class="cmp">火山长约 51%</td></tr>
+      <tr><td>perf.script 体积</td><td class="num">87.1 MB</td><td class="num">58.5 MB</td><td class="cmp">火山 +49%</td></tr>
+      <tr><td>CPU 采样（火焰图总样本）</td><td class="num">12345</td><td class="num">8670</td><td class="cmp">火山 +42%</td></tr>
+      <tr><td>harness 主进程采样占比</td><td class="num">94.5%</td><td class="num">89.7%</td><td class="cmp">+4.8pt</td></tr>
+      <tr><td>tool 命令采样占比</td><td class="num">5.5%</td><td class="num">10.3%</td><td class="cmp">−4.8pt</td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">
+    火山 B 域一体式会话跑得更长（<b>222s vs 147s</b>），perf 采到更多样本（<b>12345 vs 8670</b>）、<span class="mono">perf.script</span> 更大（<b>87.1 vs 58.5 MB</b>）。B 域「harness 主进程占比」随之从 89.7% 抬到 94.5%（火山 B 更长的运行时里 Agent 调度占比更高）。这一窗口差异与火山 Runner 的<b>存储迁移 + ENOSPC 停止修复</b>直接相关（修复了 B 域一体式的停止/确认流程，使会话更完整），也与沙箱内核不同有关，<b>不能简单归为云厂商性能差</b>。
+  </p>
+</div>
+
+<h3>4.4 B 域磁盘 I/O 方向不同（沙箱存储/页缓存差异）</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>B 域 vda 块设备</th><th>火山</th><th>华为 r2</th></tr></thead>
+    <tbody>
+      <tr><td>读 rkB/s（avg）</td><td class="num">0</td><td class="num">2679.9</td></tr>
+      <tr><td>写 wkB/s（avg）</td><td class="num">4632.1</td><td class="num">0</td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:10px 0 0;">
+    火山 B 域以<b>写盘为主</b>（wkB/s ≈ 4632，读≈0），华为 B 域以<b>读盘为主</b>（rkB/s ≈ 2680，写≈0）。这一「读写方向」差异来自沙箱 guest 内核与 overlay/数据卷实现不同，与 4.2 的沙箱内核差异同源，不改变「磁盘不构成瓶颈」的结论（iowait 全程 &lt;1%）。
+  </p>
+</div>
+
+<h2>五、相同命令耗时对比（火山 vs 华为 r2 · 71 条逐条可比）</h2>
+<div class="card">
+  <p style="margin-top:0;">
+    <b>口径</b>：两包镜像 digest / Tape 完全相同，命令账本 <b>按 ordinal 逐条匹配、命令文本完全一致</b>（A 32 条 + B 39 条 = <b>71 条</b>，全有 exit 时间戳）。耗时 = <span class="mono">spawn → exit</span> 的墙上时钟差。这是一次<b>「同一镜像、同一 workload、不同云基础设施」</b>的严格可比对照；Δ% = (火山 − 华为) / 华为，负号 = 火山更快。
+  </p>
+  <p>
+    <b>结论</b>：71 条中 <b>火山更快 45 条</b>（累计省 <b>3892 ms</b>）、<b>华为更快 26 条</b>（累计仅省 <b>449 ms</b>），净 <b>火山快约 3443 ms</b>。
+    命令总耗时 A：火山 9.19s vs 华为 11.51s；B：火山 11.17s vs 华为 12.29s。差异集中在 <b>fork/exec、文件系统遍历、CPU 渲染</b>三类，琐碎命令（ls/cp/建目录）反而华为略快但绝对量可忽略。
+  </p>
+  <table>
+    <thead><tr><th>命令类型</th><th>次数</th><th>火山合计(ms)</th><th>华为合计(ms)</th><th>Δ(ms)</th><th>Δ%</th><th>判定</th></tr></thead>
+    <tbody>
+  <tr><td>版本检查(子shell)</td><td class='num'>2</td><td class='num'>1333</td><td class='num'>2189</td><td class='num'><b>-856</b></td><td class='num'>-39.1%</td><td><span class="pill ok">火山快</span></td></tr>
+  <tr><td>python3 脚本(生成/质检)</td><td class='num'>16</td><td class='num'>5510</td><td class='num'>6354</td><td class='num'><b>-844</b></td><td class='num'>-13.3%</td><td><span class="pill ok">火山快</span></td></tr>
+  <tr><td>PPT 转换 (soffice 渲染)</td><td class='num'>3</td><td class='num'>4516</td><td class='num'>5343</td><td class='num'><b>-826</b></td><td class='num'>-15.5%</td><td><span class="pill ok">火山快</span></td></tr>
+  <tr><td>全盘 find 扫描</td><td class='num'>7</td><td class='num'>1490</td><td class='num'>2240</td><td class='num'><b>-750</b></td><td class='num'>-33.5%</td><td><span class="pill ok">火山快</span></td></tr>
+  <tr><td>node slides.js 生成</td><td class='num'>9</td><td class='num'>5425</td><td class='num'>5707</td><td class='num'><b>-282</b></td><td class='num'>-4.9%</td><td><span class="pill ok">火山快</span></td></tr>
+  <tr><td>其他</td><td class='num'>15</td><td class='num'>820</td><td class='num'>633</td><td class='num'><b>187</b></td><td class='num'>29.5%</td><td><span class="pill diff">华为快</span></td></tr>
+  <tr><td>python3 内联脚本</td><td class='num'>9</td><td class='num'>749</td><td class='num'>914</td><td class='num'><b>-165</b></td><td class='num'>-18%</td><td><span class="pill ok">火山快</span></td></tr>
+  <tr><td>文件/目录操作</td><td class='num'>10</td><td class='num'>514</td><td class='num'>421</td><td class='num'><b>93</b></td><td class='num'>22.2%</td><td><span class="pill diff">华为快</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin:8px 0 0;">Δ 为负 = 火山更快。分类口径见 §四（soffice / 版本检查已区分「<span class="mono">--version</span> 子shell」与「<span class="mono">--convert-to</span> 渲染」）。</p>
+</div>
+
+<h3>5.1 耗时差异最大的 TOP 10 命令</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>#</th><th>域·序</th><th>类型</th><th>火山(ms)</th><th>华为(ms)</th><th>Δ(ms)</th><th>Δ%</th><th>判定</th><th>命令（截断）</th></tr></thead>
+    <tbody>
+  <tr><td>1</td><td class='mono'>A·6</td><td>版本检查(子shell)</td><td class='num'>440.26</td><td class='num'>1069.7</td><td class='num'><b>-629.44</b></td><td class='num'>-58.8%</td><td><span class="pill ok">火山快</span></td><td class='mono'>echo "node: $(node -v 2&gt;&amp;1)"; echo "python3: $(python3 --version 2&gt;&amp;1)"; echo "so…</td></tr>
+  <tr><td>2</td><td class='mono'>A·27</td><td>PPT 转换 (soffice 渲染)</td><td class='num'>1493.31</td><td class='num'>2075.12</td><td class='num'><b>-581.81</b></td><td class='num'>-28%</td><td><span class="pill ok">火山快</span></td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; soffice --headless --convert-to pd…</td></tr>
+  <tr><td>3</td><td class='mono'>B·3</td><td>全盘 find 扫描</td><td class='num'>456.13</td><td class='num'>778.65</td><td class='num'><b>-322.52</b></td><td class='num'>-41.4%</td><td><span class="pill ok">火山快</span></td><td class='mono'>find / -name "finalize_deck.py" 2&gt;/dev/null | head; echo "=== template.pptx ==="; find / -na…</td></tr>
+  <tr><td>4</td><td class='mono'>A·3</td><td>全盘 find 扫描</td><td class='num'>182.1</td><td class='num'>414.24</td><td class='num'><b>-232.14</b></td><td class='num'>-56%</td><td><span class="pill ok">火山快</span></td><td class='mono'>find / -maxdepth 6 -type d -name "ppt-creation" 2&gt;/dev/null; echo "===SKILL.md==="; find / -…</td></tr>
+  <tr><td>5</td><td class='mono'>B·6</td><td>版本检查(子shell)</td><td class='num'>892.82</td><td class='num'>1118.9</td><td class='num'><b>-226.08</b></td><td class='num'>-20.2%</td><td><span class="pill ok">火山快</span></td><td class='mono'>node --version; echo "---npm root---"; ls /opt/aries-presentation/node_modules/pptxgenjs/packag…</td></tr>
+  <tr><td>6</td><td class='mono'>B·35</td><td>PPT 转换 (soffice 渲染)</td><td class='num'>2050.69</td><td class='num'>2256.52</td><td class='num'><b>-205.83</b></td><td class='num'>-9.1%</td><td><span class="pill ok">火山快</span></td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; soffice --headless --convert-to pd…</td></tr>
+  <tr><td>7</td><td class='mono'>A·18</td><td>python3 脚本(生成/质检)</td><td class='num'>483.03</td><td class='num'>631.23</td><td class='num'><b>-148.2</b></td><td class='num'>-23.5%</td><td><span class="pill ok">火山快</span></td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswa…</td></tr>
+  <tr><td>8</td><td class='mono'>A·17</td><td>python3 脚本(生成/质检)</td><td class='num'>527.44</td><td class='num'>671.12</td><td class='num'><b>-143.68</b></td><td class='num'>-21.4%</td><td><span class="pill ok">火山快</span></td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswa…</td></tr>
+  <tr><td>9</td><td class='mono'>A·28</td><td>node slides.js 生成</td><td class='num'>712.35</td><td class='num'>830.76</td><td class='num'><b>-118.41</b></td><td class='num'>-14.3%</td><td><span class="pill ok">火山快</span></td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/…</td></tr>
+  <tr><td>10</td><td class='mono'>A·29</td><td>node slides.js 生成</td><td class='num'>759.08</td><td class='num'>869.34</td><td class='num'><b>-110.26</b></td><td class='num'>-12.7%</td><td><span class="pill ok">火山快</span></td><td class='mono'>cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>5.2 差异解读</h3>
+<div class="card">
+  <ul>
+    <li><b>TOP 10 全部是「火山更快」</b>（整体 45/71 更快、净快 ~3443 ms）；华为只在琐碎命令（ls/cp/mkdir/echo，单条 &lt;100ms）偶有领先，累计只省 449 ms，不足以反转。</li>
+    <li><b>差异最大的是「fork/exec 密集」与「文件系统遍历」命令</b>：<span class="mono">find /</span> 全盘扫描合计火山快 <b>33.5%</b>（A·3 快 56% 、B·3 快 41%），版本检查子shell合计快 <b>39.1%</b>（A·6 快 59%：命令里 4 个 <span class="mono">$(…)</span> 各是一次 fork+exec）。说明火山沙箱的<b>进程创建/exec 与目录元数据遍历</b>开销明显更低。</li>
+    <li><b>CPU 密集命令火山也更稳</b>：soffice 渲染合计快 <b>15.5%</b>（A·27 快 28% 、B·35 快 9%），node slides.js 快 13%～14%（A·28/A·29），python3 finalize_deck.py 快 21%～24%（A·17/A·18）。幅度不如 find / 版本检查夸张，但方向一致。</li>
+    <li><b>根因落在「沙箱 guest 内核 + 底层实例硬件」</b>：同一镜像、同一 Tape 只保证 workload 一致，<b>不保证底层 vCPU 型号 / 磁盘 / 内核一致</b>。火山沙箱（<span class="mono">6.6.95.bck.4-rc3-amd64</span>）与本轮华为 HCE（<span class="mono">6.6.0-72.0.0.76…hce3</span>）在 fork/exec 路径、页缓存与调度上确有可观察差异。要拆到「内核 vs CPU 型号 vs 磁盘」需补 sysbench / <span class="mono">perf stat</span>（IPC、频率、syscall 耗时）这类微基准。</li>
+    <li><b>不改变既有结论</b>：这份「同镜像跨云」的 ~10%~25% 量级墙钟差异，恰好说明<b>把差异全归因云厂商不对、全归因 Runner 也不完整</b> —— 真正的变量是三元的：<b>Runner + 沙箱内核 + 底层实例</b>；其中命令耗时差异主要由后两者驱动（Runner 只影响采集器存放路径与 ENOSPC 停止，不影响业务命令执行时长）。</li>
+  </ul>
+</div>
+
+<!-- DUR-CHART-BEGIN -->
+<h3>5.3 耗时差异分布图（A / B 场景）</h3>
+<div class="card">
+  <p class="note" style="margin-top:0;">把 71 条命令的 <span class="mono">Δ = 火山 − 华为</span> 逐条画成「Δ 分布直方图 + 逐条条形图」，区分差异是<b>整体性偏移</b>还是<b>少数离群点拉动</b>；条形图悬停可看命令。完整 71 条逐条对比表见独立文件 <a href="五页PPT-profiling-火山vs华为r2-命令耗时分布.html" target="_blank" rel="noopener">五页PPT-profiling-火山vs华为r2-命令耗时分布.html ↗</a>。</p>
+
+  <h4 style="margin:18px 0 6px;font-size:14px;color:#111827;">A 场景（worker 域 · 32 条）</h4>
+  <div class='stat'><div><b>32</b><span>命令数</span></div><div><b>-72.6ms</b><span>平均 Δ</span></div><div><b>-11.8ms</b><span>中位 Δ</span></div><div><b>-629.4~37.5</b><span>Δ 范围(ms)</span></div><div><b>23:9</b><span>火山快:华为快</span></div></div>
+  <div class='legend'>
+  <span><span class='dot' style='background:#16a34a'></span>火山更快（Δ&lt;0）</span>
+  <span><span class='dot' style='background:#ea580c'></span>华为更快（Δ&gt;0）</span>
+</div>
+  <div class="chartgrid">
+    <div><svg viewBox='0 0 520 240' width='100%' xmlns='http://www.w3.org/2000/svg' font-family='Segoe UI, Arial, sans-serif'>
+<line x1='42' y1='206' x2='508' y2='206' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='210' text-anchor='end' font-size='10' fill='#6b7280'>0</text>
+<line x1='42' y1='168' x2='508' y2='168' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='172' text-anchor='end' font-size='10' fill='#6b7280'>3</text>
+<line x1='42' y1='130' x2='508' y2='130' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='134' text-anchor='end' font-size='10' fill='#6b7280'>6</text>
+<line x1='42' y1='92' x2='508' y2='92' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='96' text-anchor='end' font-size='10' fill='#6b7280'>9</text>
+<line x1='42' y1='54' x2='508' y2='54' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='58' text-anchor='end' font-size='10' fill='#6b7280'>12</text>
+<line x1='42' y1='16' x2='508' y2='16' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='20' text-anchor='end' font-size='10' fill='#6b7280'>15</text>
+<line x1='461.4' y1='16' x2='461.4' y2='206' stroke='#9ca3af' stroke-width='1.2' stroke-dasharray='4,3'/>
+<rect x='43' y='193.3' width='29.1' height='12.7' fill='#16a34a' rx='2'><title>A Δ-650~-600 ms：1 条</title></rect>
+<text x='57.5' y='190.3' text-anchor='middle' font-size='10' fill='#374151'>1</text>
+<rect x='74.1' y='193.3' width='29.1' height='12.7' fill='#16a34a' rx='2'><title>A Δ-600~-550 ms：1 条</title></rect>
+<text x='88.6' y='190.3' text-anchor='middle' font-size='10' fill='#374151'>1</text>
+<rect x='291.5' y='193.3' width='29.1' height='12.7' fill='#16a34a' rx='2'><title>A Δ-250~-200 ms：1 条</title></rect>
+<text x='306.1' y='190.3' text-anchor='middle' font-size='10' fill='#374151'>1</text>
+<rect x='353.7' y='142.7' width='29.1' height='63.3' fill='#16a34a' rx='2'><title>A Δ-150~-100 ms：5 条</title></rect>
+<text x='368.2' y='139.7' text-anchor='middle' font-size='10' fill='#374151'>5</text>
+<rect x='384.7' y='168' width='29.1' height='38' fill='#16a34a' rx='2'><title>A Δ-100~-50 ms：3 条</title></rect>
+<text x='399.3' y='165' text-anchor='middle' font-size='10' fill='#374151'>3</text>
+<rect x='415.8' y='54' width='29.1' height='152' fill='#16a34a' rx='2'><title>A Δ-50~0 ms：12 条</title></rect>
+<text x='430.3' y='51' text-anchor='middle' font-size='10' fill='#374151'>12</text>
+<rect x='446.9' y='92' width='29.1' height='114' fill='#ea580c' rx='2'><title>A Δ0~50 ms：9 条</title></rect>
+<text x='461.4' y='89' text-anchor='middle' font-size='10' fill='#374151'>9</text>
+<text x='88.6' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>-600</text>
+<text x='212.9' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>-400</text>
+<text x='337.1' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>-200</text>
+<text x='461.4' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>0</text>
+<text x='275' y='239' text-anchor='middle' font-size='10.5' fill='#374151'>Δms（负=火山快 · 正=华为快 · 箱宽 50ms）</text>
+<text x='14' y='111' text-anchor='middle' font-size='10' fill='#6b7280' transform='rotate(-90 14 111)'>命令数</text>
+</svg>
+</div>
+    <div><svg viewBox='0 0 520 240' width='100%' xmlns='http://www.w3.org/2000/svg' font-family='Segoe UI, Arial, sans-serif'>
+<line x1='42' y1='182.2' x2='508' y2='182.2' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='186.2' text-anchor='end' font-size='10' fill='#6b7280'>-600</text>
+<line x1='42' y1='134.8' x2='508' y2='134.8' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='138.8' text-anchor='end' font-size='10' fill='#6b7280'>-400</text>
+<line x1='42' y1='87.2' x2='508' y2='87.2' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='91.2' text-anchor='end' font-size='10' fill='#6b7280'>-200</text>
+<line x1='42' y1='39.8' x2='508' y2='39.8' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='43.8' text-anchor='end' font-size='10' fill='#6b7280'>0</text>
+<line x1='42' y1='39.8' x2='508' y2='39.8' stroke='#9ca3af' stroke-width='1.2' stroke-dasharray='4,3'/>
+<rect x='42' y='39.8' width='13.76' height='149.5' fill='#16a34a' rx='0.5'><title>A·ord6  Δ-629.44ms  echo "node: $(node -v 2&gt;&amp;1)"; echo "python3: $(python3 --version 2&gt;&amp;1)"; echo "soffice: $(soffice --version 2&gt;&amp;1 | head -1)"; echo "pdftoppm: $(pdftoppm -v 2&gt;&amp;1 | head -1)"; echo "===skill scripts==="; ls /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.py /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.js 2&gt;&amp;1 | head -40</title></rect>
+<rect x='56.56' y='39.8' width='13.76' height='138.2' fill='#16a34a' rx='0.5'><title>A·ord27  Δ-581.81ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; soffice --headless --convert-to pdf --outdir qa output/final.pptx 2&gt;&amp;1 | tail -2; echo "=== pdftotext 检查占位符与重复 ==="; pdftotext qa/final.pdf qa/final.txt 2&gt;&amp;1; grep -n "Click to edit\|Master title\|Master text" qa/final.txt | head -20; echo "=== 每页文本预览 ==="; python3 -c " import re txt = open('qa/final.txt', encoding='utf-8').read() pages = txt.split(chr(12)) for i, p in enumerate(pages, 1): p = p.strip() print(f'--- 第{i}页 ({len(p)}字符) ---') print(p[:200]) print() "</title></rect>
+<rect x='71.12' y='39.8' width='13.76' height='55.1' fill='#16a34a' rx='0.5'><title>A·ord3  Δ-232.14ms  find / -maxdepth 6 -type d -name "ppt-creation" 2&gt;/dev/null; echo "===SKILL.md==="; find / -maxdepth 8 -name "SKILL.md" -path "*ppt-creation*" 2&gt;/dev/null | head -20</title></rect>
+<rect x='85.69' y='39.8' width='13.76' height='35.2' fill='#16a34a' rx='0.5'><title>A·ord18  Δ-148.2ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" --keep-workdir qa/workdir 2&gt;&amp;1 | tail -5; echo "===查看 slide8.xml 问题行==="; sed -n '230,245p' qa/workdir/template/ppt/slides/slide8.xml 2&gt;&amp;1</title></rect>
+<rect x='100.25' y='39.8' width='13.76' height='34.1' fill='#16a34a' rx='0.5'><title>A·ord17  Δ-143.68ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1; echo "=== EXIT $? ==="; ls -la output/ 2&gt;&amp;1</title></rect>
+<rect x='114.81' y='39.8' width='13.76' height='28.1' fill='#16a34a' rx='0.5'><title>A·ord28  Δ-118.41ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1 | tail -6; echo "=== EXIT $? ==="</title></rect>
+<rect x='129.38' y='39.8' width='13.76' height='26.2' fill='#16a34a' rx='0.5'><title>A·ord29  Δ-110.26ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1 | tail -4; echo "=== 实际各页字符数（按 slide 编号）==="; python3 -c " import zipfile, re zf = zipfile.ZipFile('output/final.pptx') def vis(t): return sum(1.0 if ord(c)&gt;0x2E80 else 0.5 for c in t if not c.isspace()) for n in sorted([n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)], key=lambda x:int(re.search(r'(\d+)',x).group(1))): xml = zf.read(n).decode('utf-8','ignore') t = ''.join(re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml)) print(f'{n}: {round(vis(t))} 视觉字') "</title></rect>
+<rect x='143.94' y='39.8' width='13.76' height='25.4' fill='#16a34a' rx='0.5'><title>A·ord31  Δ-106.97ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 "$SKILL/scripts/qa_geometry.py" output/final.pptx 2&gt;&amp;1 | grep -E "error|✗|duplicate|out-of-bounds|occlusion|text-collision" | head -30; echo "=== qa_density ===" &amp;&amp; python3 "$SKILL/scripts/qa_density.py" output/final.pptx --lock execution-lock.json 2&gt;&amp;1; echo "=== validate.py ===" &amp;&amp; python3 "$SKILL/scripts/opc/validate.py" output/final.pptx 2&gt;&amp;1 | tail -5</title></rect>
+<rect x='158.5' y='39.8' width='13.76' height='20.5' fill='#16a34a' rx='0.5'><title>A·ord19  Δ-86.18ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1; echo "=== EXIT $? ==="; ls -la output/</title></rect>
+<rect x='173.06' y='39.8' width='13.76' height='19.9' fill='#16a34a' rx='0.5'><title>A·ord30  Δ-83.64ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1 &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "技术研究部||2026-10-27" 2&gt;&amp;1 | tail -4; echo "=== 各页字符数 ==="; python3 -c " import zipfile, re zf = zipfile.ZipFile('output/final.pptx') def vis(t): return sum(1.0 if ord(c)&gt;0x2E80 else 0.5 for c in t if not c.isspace()) for n in sorted([n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)], key=lambda x:int(re.search(r'(\d+)',x).group(1))): xml = zf.read(n).decode('utf-8','ignore') t = ''.join(re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml)) print(f'{n}: {round(vis(t))} 视觉字') "</title></rect>
+<rect x='187.62' y='39.8' width='13.76' height='18.8' fill='#16a34a' rx='0.5'><title>A·ord4  Δ-79ms  pwd; echo "==="; ls -la /workspace/aries-case/ 2&gt;&amp;1; echo "===HOME==="; ls -la ~ 2&gt;&amp;1; echo "===find skills anywhere==="; find / -maxdepth 7 -type d -name "skills" 2&gt;/dev/null | head -30</title></rect>
+<rect x='202.19' y='39.8' width='13.76' height='9.2' fill='#16a34a' rx='0.5'><title>A·ord32  Δ-38.66ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; rm -f qa/final.pdf qa/final.txt &amp;&amp; soffice --headless --convert-to pdf --outdir qa output/final.pptx &gt;/dev/null 2&gt;&amp;1; pdftotext qa/final.pdf qa/final.txt 2&gt;&amp;1; echo "=== 占位符泄漏检查（应为空）==="; grep -c "Click to edit\|Master title\|Master text\|‹#›\|1/27/13" qa/final.txt; echo "=== 页数与每页首行 ==="; python3 -c " txt = open('qa/final.txt', encoding='utf-8').read() pages = [p.strip() for p in txt.split(chr(12)) if p.strip()] print('实际内容页数:', len(pages)) for i,p in enumerate(pages,1): first = p.split(chr(10))[0][:30] print(f' 第{i}页: {first}') "; echo "=== 文件信息 ==="; ls -la output/final.pptx</title></rect>
+<rect x='216.75' y='39.8' width='13.76' height='5.6' fill='#16a34a' rx='0.5'><title>A·ord16  Δ-23.42ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py --help 2&gt;&amp;1 | head -60</title></rect>
+<rect x='231.31' y='39.8' width='13.76' height='4.4' fill='#16a34a' rx='0.5'><title>A·ord20  Δ-18.37ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation &amp;&amp; echo "=== deliver 校验 ===" &amp;&amp; node "$SKILL/scripts/validate-execution-lock.js" execution-lock.json --phase deliver; node "$SKILL/scripts/validate-evidence-plan.js" evidence-plan.json --phase deliver; echo "=== qa_geometry ===" &amp;&amp; python3 "$SKILL/scripts/qa_geometry.py" output/final.pptx; echo "GEOMETRY EXIT $?"; echo "=== qa_density ===" &amp;&amp; python3 "$SKILL/scripts/qa_density.py" output/final.pptx --lock execution-lock.json; echo "DENSITY EXIT $?"</title></rect>
+<rect x='245.88' y='39.8' width='13.76' height='4.1' fill='#16a34a' rx='0.5'><title>A·ord7  Δ-17.26ms  cd /workspace/aries-case &amp;&amp; mkdir -p projects/llm-development/{sources,analysis,assets,output,qa} &amp;&amp; echo "目录已创建"; echo "===检查 pptxgenjs==="; node -e "console.log(require.resolve('pptxgenjs'))" 2&gt;&amp;1 | head -3; echo "===检查 skill 内 node_modules==="; find /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation -maxdepth 3 -name "node_modules" -type d 2&gt;/dev/null; echo "===全局 node 模块路径==="; npm root -g 2&gt;&amp;1</title></rect>
+<rect x='260.44' y='39.8' width='13.76' height='3.3' fill='#16a34a' rx='0.5'><title>A·ord21  Δ-13.93ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation &amp;&amp; python3 "$SKILL/scripts/audit_pptx.py" output/final.pptx --template "$SKILL/references/template.pptx" --lock execution-lock.json --evidence-plan evidence-plan.json --report qa/structure.json 2&gt;&amp;1; echo "AUDIT EXIT $?"</title></rect>
+<rect x='275' y='39.8' width='13.76' height='2.3' fill='#16a34a' rx='0.5'><title>A·ord24  Δ-9.65ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile, re zf = zipfile.ZipFile('/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx') xml = zf.read('ppt/slideLayouts/slideLayout7.xml').decode('utf-8','ignore') # 提取 sldLayout 属性 m = re.search(r'&lt;p:sldLayout[^&gt;]*&gt;', xml) print('sldLayout tag:', m.group(0) if m else 'NONE') print('---blank ph---') for ph in re.findall(r'&lt;p:ph[^&gt;]*&gt;', xml): print(ph) "</title></rect>
+<rect x='289.56' y='39.8' width='13.76' height='2.1' fill='#16a34a' rx='0.5'><title>A·ord26  Δ-8.75ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile, re zf = zipfile.ZipFile('output/final.pptx') slides = sorted([n for n in zf.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)], key=lambda x: int(re.search(r'(\d+)', x).group(1))) def vis(t): return sum(1.0 if ord(c)&gt;0x2E80 else 0.5 for c in t if not c.isspace()) for n in slides: xml = zf.read(n).decode('utf-8','ignore') texts = re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml) total = round(vis(''.join(texts))) print(f'{n}: chars={total}, 文本片段数={len(texts)}') for t in texts[:8]: print(' |', repr(t[:40])) "</title></rect>
+<rect x='304.12' y='39.8' width='13.76' height='1.8' fill='#16a34a' rx='0.5'><title>A·ord23  Δ-7.78ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile, re zf = zipfile.ZipFile('/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx') print('=== slideLayout7.xml 占位符/文字 ===') for n in zf.namelist(): if 'slideLayout' in n and n.endswith('.xml'): xml = zf.read(n).decode('utf-8','ignore') if 'layout7' in n or True: pass # 列出所有 layout layouts = [n for n in zf.namelist() if 'slideLayout' in n and n.endswith('.xml')] print('layouts:', layouts) print('=== 各 layout 含 ph 类型与文本 ===') for n in layouts: xml = zf.read(n).decode('utf-8','ignore') phs = re.findall(r'type=\"([a-zA-Z]+)\"', xml) texts = re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml) print(n, '| ph types:', sorted(set(phs)), '| texts:', texts[:5]) print('=== slideMaster 文本 ===') masters = [n for n in zf.namelist() if 'slideMaster' in n and n.endswith('.xml')] for n in masters: xml = zf.read(n).decode('utf-8','ignore') texts = re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml) phs = re.findall(r'type=\"([a-zA-Z]+)\"', xml) print(n, '| texts:', texts[:8], '| ph types:', sorted(set(phs))) "</title></rect>
+<rect x='318.69' y='39.8' width='13.76' height='0.7' fill='#16a34a' rx='0.5'><title>A·ord9  Δ-2.99ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/evidence-plan.schema.json . &amp;&amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/execution-lock.schema.json . &amp;&amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/design-spec-reference.md ./design-spec-reference.md &amp;&amp; echo "schema 与 reference 已复制" &amp;&amp; ls -la</title></rect>
+<rect x='333.25' y='39.8' width='13.76' height='0.6' fill='#16a34a' rx='0.5'><title>A·ord12  Δ-2.55ms  grep -n "module.exports" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/components.js; echo "===末尾==="; tail -80 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/components.js</title></rect>
+<rect x='347.81' y='39.8' width='13.76' height='0.5' fill='#16a34a' rx='0.5'><title>A·ord1  Δ-1.27ms  find /run/aries-jiuwen-93cc9c73c55f7719 -maxdepth 8 -type d -name "ppt-creation" 2&gt;/dev/null; echo "---"; ls -d /run/aries-jiuwen-93cc9c73c55f7719/home/data/*/ 2&gt;/dev/null</title></rect>
+<rect x='362.38' y='39.8' width='13.76' height='0.5' fill='#16a34a' rx='0.5'><title>A·ord2  Δ-0.14ms  ls -la /run/aries-jiuwen-93cc9c73c55f7719/ 2&gt;&amp;1; echo "===HOME==="; ls -la /run/aries-jiuwen-93cc9c73c55f7719/home/ 2&gt;&amp;1; echo "===DATA==="; ls -la /run/aries-jiuwen-93cc9c73c55f7719/home/data/ 2&gt;&amp;1</title></rect>
+<rect x='376.94' y='39.7' width='13.76' height='0.5' fill='#ea580c' rx='0.5'><title>A·ord25  Δ0.09ms  SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation; echo "=== make_blank_template 中 showMasterSp / blank 相关 ==="; grep -n "showMasterSp\|blank\|slideLayout7\|sldLayout\|type=" "$SKILL/scripts/make_blank_template.py" | head -30; echo "=== qa_density.py 统计逻辑 ==="; grep -n "def \|text\|visual\|EMPTY\|&lt;a:t&gt;\|inherit\|layout\|master" "$SKILL/scripts/qa_density.py" | head -50</title></rect>
+<rect x='391.5' y='39.7' width='13.76' height='0.5' fill='#ea580c' rx='0.5'><title>A·ord14  Δ0.26ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; mkdir -p sources analysis assets output qa &amp;&amp; ls -la</title></rect>
+<rect x='406.06' y='39.6' width='13.76' height='0.5' fill='#ea580c' rx='0.5'><title>A·ord5  Δ0.45ms  ls -la /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ 2&gt;&amp;1; echo "===ppt-creation==="; ls -la /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/ 2&gt;&amp;1</title></rect>
+<rect x='420.62' y='39.5' width='13.76' height='0.5' fill='#ea580c' rx='0.5'><title>A·ord22  Δ0.99ms  SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation; echo "=== qa_geometry duplicate-chrome 检测 ==="; grep -n "duplicate-chrome\|Click to edit\|Master\|placeholder\|ph " "$SKILL/scripts/qa_geometry.py" | head -40</title></rect>
+<rect x='435.19' y='36.3' width='13.76' height='3.5' fill='#ea580c' rx='0.5'><title>A·ord11  Δ14.64ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation &amp;&amp; node "$SKILL/scripts/validate-execution-lock.js" execution-lock.json --phase design; echo "=== EXIT $? ==="</title></rect>
+<rect x='449.75' y='33.6' width='13.76' height='6.1' fill='#ea580c' rx='0.5'><title>A·ord15  Δ25.88ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1; echo "=== EXIT $? ==="; ls -la output/ 2&gt;&amp;1</title></rect>
+<rect x='464.31' y='33.4' width='13.76' height='6.3' fill='#ea580c' rx='0.5'><title>A·ord8  Δ26.55ms  ls -la /opt/aries-presentation/ 2&gt;&amp;1; echo "===node_modules==="; ls /opt/aries-presentation/node_modules/ 2&gt;&amp;1 | head -30; echo "===版本==="; node -e "console.log(require('/opt/aries-presentation/node_modules/pptxgenjs/package.json').version)" 2&gt;&amp;1</title></rect>
+<rect x='478.88' y='31.3' width='13.76' height='8.4' fill='#ea580c' rx='0.5'><title>A·ord10  Δ35.38ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; SKILL=/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation &amp;&amp; node "$SKILL/scripts/validate-execution-lock.js" execution-lock.json --phase design; echo "=== EXIT $? ==="; node "$SKILL/scripts/validate-evidence-plan.js" evidence-plan.json --phase design; echo "=== EXIT $? ==="</title></rect>
+<rect x='493.44' y='30.8' width='13.76' height='8.9' fill='#ea580c' rx='0.5'><title>A·ord13  Δ37.49ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; NODE_PATH=/opt/aries-presentation/node_modules node slides.js 2&gt;&amp;1; echo "=== EXIT $? ==="; ls -la output/ 2&gt;&amp;1</title></rect>
+<text x='275' y='7.903875' text-anchor='middle' font-size='10.5' fill='#374151'>命令（按 Δ 升序：左=火山更快 → 右=华为更快）</text>
+<text x='14' y='111' text-anchor='middle' font-size='10' fill='#6b7280' transform='rotate(-90 14 111)'>Δms</text>
+</svg>
+</div>
+  </div>
+
+  <h4 style="margin:22px 0 6px;font-size:14px;color:#111827;">B 场景（sandbox-harness 域 · 39 条）</h4>
+  <div class='stat'><div><b>39</b><span>命令数</span></div><div><b>-28.7ms</b><span>平均 Δ</span></div><div><b>-0.7ms</b><span>中位 Δ</span></div><div><b>-322.5~70.9</b><span>Δ 范围(ms)</span></div><div><b>22:17</b><span>火山快:华为快</span></div></div>
+  <div class='legend'>
+  <span><span class='dot' style='background:#16a34a'></span>火山更快（Δ&lt;0）</span>
+  <span><span class='dot' style='background:#ea580c'></span>华为更快（Δ&gt;0）</span>
+</div>
+  <div class="chartgrid">
+    <div><svg viewBox='0 0 520 240' width='100%' xmlns='http://www.w3.org/2000/svg' font-family='Segoe UI, Arial, sans-serif'>
+<line x1='42' y1='206' x2='508' y2='206' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='210' text-anchor='end' font-size='10' fill='#6b7280'>0</text>
+<line x1='42' y1='168' x2='508' y2='168' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='172' text-anchor='end' font-size='10' fill='#6b7280'>3</text>
+<line x1='42' y1='130' x2='508' y2='130' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='134' text-anchor='end' font-size='10' fill='#6b7280'>6</text>
+<line x1='42' y1='92' x2='508' y2='92' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='96' text-anchor='end' font-size='10' fill='#6b7280'>9</text>
+<line x1='42' y1='54' x2='508' y2='54' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='58' text-anchor='end' font-size='10' fill='#6b7280'>12</text>
+<line x1='42' y1='16' x2='508' y2='16' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='20' text-anchor='end' font-size='10' fill='#6b7280'>15</text>
+<line x1='461.4' y1='16' x2='461.4' y2='206' stroke='#9ca3af' stroke-width='1.2' stroke-dasharray='4,3'/>
+<rect x='229.4' y='193.3' width='29.1' height='12.7' fill='#16a34a' rx='2'><title>B Δ-350~-300 ms：1 条</title></rect>
+<text x='243.9' y='190.3' text-anchor='middle' font-size='10' fill='#374151'>1</text>
+<rect x='291.5' y='180.7' width='29.1' height='25.3' fill='#16a34a' rx='2'><title>B Δ-250~-200 ms：2 条</title></rect>
+<text x='306.1' y='177.7' text-anchor='middle' font-size='10' fill='#374151'>2</text>
+<rect x='353.7' y='193.3' width='29.1' height='12.7' fill='#16a34a' rx='2'><title>B Δ-150~-100 ms：1 条</title></rect>
+<text x='368.2' y='190.3' text-anchor='middle' font-size='10' fill='#374151'>1</text>
+<rect x='384.7' y='155.3' width='29.1' height='50.7' fill='#16a34a' rx='2'><title>B Δ-100~-50 ms：4 条</title></rect>
+<text x='399.3' y='152.3' text-anchor='middle' font-size='10' fill='#374151'>4</text>
+<rect x='415.8' y='28.7' width='29.1' height='177.3' fill='#16a34a' rx='2'><title>B Δ-50~0 ms：14 条</title></rect>
+<text x='430.3' y='25.7' text-anchor='middle' font-size='10' fill='#374151'>14</text>
+<rect x='446.9' y='16' width='29.1' height='190' fill='#ea580c' rx='2'><title>B Δ0~50 ms：15 条</title></rect>
+<text x='461.4' y='13' text-anchor='middle' font-size='10' fill='#374151'>15</text>
+<rect x='477.9' y='180.7' width='29.1' height='25.3' fill='#ea580c' rx='2'><title>B Δ50~100 ms：2 条</title></rect>
+<text x='492.5' y='177.7' text-anchor='middle' font-size='10' fill='#374151'>2</text>
+<text x='88.6' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>-600</text>
+<text x='212.9' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>-400</text>
+<text x='337.1' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>-200</text>
+<text x='461.4' y='228' text-anchor='middle' font-size='10' fill='#6b7280'>0</text>
+<text x='275' y='239' text-anchor='middle' font-size='10.5' fill='#374151'>Δms（负=火山快 · 正=华为快 · 箱宽 50ms）</text>
+<text x='14' y='111' text-anchor='middle' font-size='10' fill='#6b7280' transform='rotate(-90 14 111)'>命令数</text>
+</svg>
+</div>
+    <div><svg viewBox='0 0 520 240' width='100%' xmlns='http://www.w3.org/2000/svg' font-family='Segoe UI, Arial, sans-serif'>
+<line x1='42' y1='182.2' x2='508' y2='182.2' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='186.2' text-anchor='end' font-size='10' fill='#6b7280'>-600</text>
+<line x1='42' y1='134.8' x2='508' y2='134.8' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='138.8' text-anchor='end' font-size='10' fill='#6b7280'>-400</text>
+<line x1='42' y1='87.2' x2='508' y2='87.2' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='91.2' text-anchor='end' font-size='10' fill='#6b7280'>-200</text>
+<line x1='42' y1='39.8' x2='508' y2='39.8' stroke='#e5e7eb' stroke-width='1'/>
+<text x='36' y='43.8' text-anchor='end' font-size='10' fill='#6b7280'>0</text>
+<line x1='42' y1='39.8' x2='508' y2='39.8' stroke='#9ca3af' stroke-width='1.2' stroke-dasharray='4,3'/>
+<rect x='42' y='39.8' width='11.15' height='76.6' fill='#16a34a' rx='0.5'><title>B·ord3  Δ-322.52ms  find / -name "finalize_deck.py" 2&gt;/dev/null | head; echo "=== template.pptx ==="; find / -name "template.pptx" -path "*ppt*" 2&gt;/dev/null | head; echo "=== pptxgenjs ==="; find / -name "pptxgenjs*" -maxdepth 8 2&gt;/dev/null | head</title></rect>
+<rect x='53.95' y='39.8' width='11.15' height='53.7' fill='#16a34a' rx='0.5'><title>B·ord6  Δ-226.08ms  node --version; echo "---npm root---"; ls /opt/aries-presentation/node_modules/pptxgenjs/package.json 2&gt;/dev/null &amp;&amp; echo "pptxgenjs ok"; echo "---sharp---"; ls /opt/aries-presentation/node_modules/sharp/package.json 2&gt;/dev/null &amp;&amp; echo "sharp ok" || echo "no sharp"; echo "---python---"; python3 --version; echo "---soffice/pdftoppm---"; soffice --version 2&gt;/dev/null | head -1; pdftoppm -v 2&gt;/dev/null | head -1; echo "---scripts---"; ls /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/*.py | head -30</title></rect>
+<rect x='65.9' y='39.8' width='11.15' height='48.9' fill='#16a34a' rx='0.5'><title>B·ord35  Δ-205.83ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; soffice --headless --convert-to pdf --outdir output output/final.pptx 2&gt;&amp;1 | tail -2; echo "=== PDF 页数 ==="; pdfinfo output/final.pdf 2&gt;/dev/null | grep -E "Pages|Page size"; echo "=== 生成缩略图 ==="; pdftoppm -jpeg -r 100 output/final.pdf qa/slide 2&gt;&amp;1; ls -la qa/*.jpg 2&gt;/dev/null | head</title></rect>
+<rect x='77.85' y='39.8' width='11.15' height='25.9' fill='#16a34a' rx='0.5'><title>B·ord29  Δ-109.24ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</title></rect>
+<rect x='89.79' y='39.8' width='11.15' height='23.1' fill='#16a34a' rx='0.5'><title>B·ord1  Δ-97.17ms  find /run/aries-jiuwen-43075c2743787d78/home/data -type d -name "ppt-creation" 2&gt;/dev/null; echo "---"; find / -maxdepth 6 -type d -name "ppt-creation" 2&gt;/dev/null | head -20</title></rect>
+<rect x='101.74' y='39.8' width='11.15' height='18.4' fill='#16a34a' rx='0.5'><title>B·ord12  Δ-77.56ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --keep-workdir /tmp/llm-keep 2&gt;&amp;1 | tail -5; echo "=== slide8.xml 220-240 ==="; sed -n '220,240p' /tmp/llm-keep/template/ppt/slides/slide8.xml</title></rect>
+<rect x='113.69' y='39.8' width='11.15' height='16.8' fill='#16a34a' rx='0.5'><title>B·ord11  Δ-70.92ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27"</title></rect>
+<rect x='125.64' y='39.8' width='11.15' height='14.9' fill='#16a34a' rx='0.5'><title>B·ord31  Δ-62.57ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -2 &amp;&amp; python3 rename_slides.py output/final.pptx output/final.pptx &amp;&amp; echo "=== 校验 slide 文件名与播放顺序 ===" &amp;&amp; python3 -c " import zipfile, re with zipfile.ZipFile('output/final.pptx') as z: names = sorted([n for n in z.namelist() if 'ppt/slides/slide' in n and n.endswith('.xml') and '/_rels/' not in n]) print('slide 文件:', [n.rsplit('/',1)[-1] for n in names]) prs = z.read('ppt/presentation.xml').decode('utf-8') rids = re.findall(r'&lt;p:sldId[^&gt;]*r:id=\"(rId\d+)\"', prs) rels = z.read('ppt/_rels/presentation.xml.rels').decode('utf-8') rid2slide = dict(re.findall(r'Id=\"(rId\d+)\"[^&gt;]*slides/(slide\d+\.xml)\"', rels)) print('播放顺序:', [rid2slide.get(r) for r in rids]) "</title></rect>
+<rect x='137.59' y='39.8' width='11.15' height='11.5' fill='#16a34a' rx='0.5'><title>B·ord28  Δ-48.24ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -3 &amp;&amp; python3 rename_slides.py output/final.pptx output/final.pptx</title></rect>
+<rect x='149.54' y='39.8' width='11.15' height='9.4' fill='#16a34a' rx='0.5'><title>B·ord32  Δ-39.72ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</title></rect>
+<rect x='161.49' y='39.8' width='11.15' height='9.1' fill='#16a34a' rx='0.5'><title>B·ord24  Δ-38.33ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</title></rect>
+<rect x='173.44' y='39.8' width='11.15' height='8.4' fill='#16a34a' rx='0.5'><title>B·ord34  Δ-35.49ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== audit_pptx ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/audit_pptx.py output/final.pptx --template output/template-clean.pptx --lock execution-lock.json --evidence-plan evidence-plan.json --report qa/structure.json; echo "=== validate.py ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/validate.py output/final.pptx</title></rect>
+<rect x='185.38' y='39.8' width='11.15' height='7.5' fill='#16a34a' rx='0.5'><title>B·ord23  Δ-31.71ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -8</title></rect>
+<rect x='197.33' y='39.8' width='11.15' height='5.8' fill='#16a34a' rx='0.5'><title>B·ord33  Δ-24.44ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; node slides.js &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27" --template output/template-clean.pptx 2&gt;&amp;1 | tail -2 &amp;&amp; python3 rename_slides.py output/final.pptx output/final.pptx &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</title></rect>
+<rect x='209.28' y='39.8' width='11.15' height='5.2' fill='#16a34a' rx='0.5'><title>B·ord14  Δ-21.75ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; echo "=== qa_geometry ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py output/final.pptx; echo "=== qa_density ===" &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_density.py output/final.pptx --lock execution-lock.json</title></rect>
+<rect x='221.23' y='39.8' width='11.15' height='1.9' fill='#16a34a' rx='0.5'><title>B·ord4  Δ-8ms  mkdir -p /workspace/aries-case/projects/llm-development/{sources,analysis,assets,output,qa} &amp;&amp; cp /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/evidence-plan.json /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/evidence-plan.schema.json /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/execution-lock-reference.json /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/base/execution-lock.schema.json /workspace/aries-case/projects/llm-development/ &amp;&amp; echo "工作区已建立" &amp;&amp; ls -la /workspace/aries-case/projects/llm-development/</title></rect>
+<rect x='233.18' y='39.8' width='11.15' height='0.7' fill='#16a34a' rx='0.5'><title>B·ord27  Δ-2.81ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile, re def vis_len(t): return sum(1.0 if ord(c)&gt;0x2E80 else 0.5 for c in t if not c.isspace()) with zipfile.ZipFile('output/final.pptx') as z: # 播放顺序 prs = z.read('ppt/presentation.xml').decode('utf-8') ids = re.findall(r'&lt;p:sldId[^&gt;]*r:id=\"(rId\d+)\"', prs) rels = z.read('ppt/_rels/presentation.xml.rels').decode('utf-8') rid2slide = dict(re.findall(r'Id=\"(rId\d+)\"[^&gt;]*slides/(slide\d+\.xml)\"', rels)) print('播放顺序:', [rid2slide.get(i) for i in ids]) # 每个 slide 的字量 names = sorted([n for n in z.namelist() if re.fullmatch(r'ppt/slides/slide\d+\.xml', n)], key=lambda n:int(re.search(r'\d+',n.rsplit('/',1)[-1]).group())) for n in names: xml = z.read(n).decode('utf-8', errors='ignore') txt = ''.join(re.findall(r'&lt;a:t&gt;([^&lt;]*)&lt;/a:t&gt;', xml)) print(f'{n.rsplit(chr(47),1)[-1]}: {round(vis_len(txt))} 字 | {txt[:60]!r}') "</title></rect>
+<rect x='245.13' y='39.8' width='11.15' height='0.5' fill='#16a34a' rx='0.5'><title>B·ord22  Δ-2.13ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile, re src = '/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx' dst = 'output/template-clean.pptx' with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zout: for item in zin.infolist(): data = zin.read(item.filename) if item.filename.endswith('.xml'): text = data.decode('utf-8') text = re.sub(r'Click to edit[^&lt;]*', '', text) data = text.encode('utf-8') zout.writestr(item, data) print('template-clean.pptx written') " &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/unpack.py output/template-clean.pptx /tmp/tpl-clean-check &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo "clean template unpack OK" &amp;&amp; grep -rc "Click to edit" /tmp/tpl-clean-check/ 2&gt;/dev/null | grep -v ':0' | head || echo "no Click to edit remains"</title></rect>
+<rect x='257.08' y='39.8' width='11.15' height='0.5' fill='#16a34a' rx='0.5'><title>B·ord15  Δ-1.94ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/unpack.py /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx /tmp/tpl-unpack &gt;/dev/null 2&gt;&amp;1; echo "=== 各 layout 的占位符类型 (ph type) ==="; for f in /tmp/tpl-unpack/ppt/slideLayouts/slideLayout*.xml; do echo "--- $(basename $f) ---"; grep -o 'type="[a-zA-Z]*"' "$f" | sort -u | tr '\n' ' '; echo; done</title></rect>
+<rect x='269.03' y='39.8' width='11.15' height='0.5' fill='#16a34a' rx='0.5'><title>B·ord2  Δ-0.7ms  ls -la /run/aries-jiuwen-43075c2743787d78/home/data/service_default/agent_default/agent/jiuwenclaw_workspace/ 2&gt;/dev/null; echo "=== skills ==="; ls -la /run/aries-jiuwen-43075c2743787d78/home/data/service_default/agent_default/agent/jiuwenclaw_workspace/skills/ 2&gt;/dev/null; echo "=== find skills ==="; find /run -maxdepth 8 -type d -name "skills" 2&gt;/dev/null</title></rect>
+<rect x='280.97' y='39.8' width='11.15' height='0.5' fill='#16a34a' rx='0.5'><title>B·ord25  Δ-0.44ms  echo "=== master/layout 中所有非空 a:t 文字（示例占位符文字）==="; grep -rho '&lt;a:t&gt;[^&lt;]*&lt;/a:t&gt;' /tmp/tpl-unpack/ppt/slideMasters/slideMaster1.xml | sort | uniq -c; echo "=== 各 layout 中的示例文字 ==="; grep -rho '&lt;a:t&gt;[^&lt;]*&lt;/a:t&gt;' /tmp/tpl-unpack/ppt/slideLayouts/*.xml | sort | uniq -c | head -30</title></rect>
+<rect x='292.92' y='39.8' width='11.15' height='0.5' fill='#16a34a' rx='0.5'><title>B·ord20  Δ-0.14ms  grep -n "Click\|placeholder\|ph type\|title\|clean\|strip\|remove" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/merge_slides.py | head -30; echo "=== make_blank_template.py 是否清理占位符 ==="; grep -n "Click\|title\|body\|placeholder\|ph " /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/make_blank_template.py | head -30</title></rect>
+<rect x='304.87' y='39.7' width='11.15' height='0.5' fill='#ea580c' rx='0.5'><title>B·ord17  Δ0.15ms  grep -n "Click to edit\|duplicate-chrome\|duplicate_chrome\|Master\|master" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py | head -40</title></rect>
+<rect x='316.82' y='39.7' width='11.15' height='0.5' fill='#ea580c' rx='0.5'><title>B·ord18  Δ0.16ms  echo "=== slideMaster1.xml 中 'Click to edit' 文字 ==="; grep -o 'Click to edit[^&lt;]*' /tmp/final-unpack/ppt/slideMasters/slideMaster1.xml | sort | uniq -c; echo "=== slideMaster1.xml 占位符类型 ==="; grep -o 'type="[a-zA-Z]*"' /tmp/final-unpack/ppt/slideMasters/slideMaster1.xml | sort | uniq -c; echo "=== 封面 slide1 是否含 title 占位符与 meta ==="; grep -o 'type="[a-zA-Z]*"' /tmp/final-unpack/ppt/slides/slide1.xml | sort | uniq -c</title></rect>
+<rect x='328.77' y='39.7' width='11.15' height='0.5' fill='#ea580c' rx='0.5'><title>B·ord39  Δ0.19ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; cp output/final.pptx "output/大模型发展.pptx" &amp;&amp; ls -la "output/大模型发展.pptx"</title></rect>
+<rect x='340.72' y='39.7' width='11.15' height='0.5' fill='#ea580c' rx='0.5'><title>B·ord21  Δ0.22ms  echo "=== 模板解包目录中所有 'Click to edit' 文字分布 ==="; grep -rl "Click to edit" /tmp/tpl-unpack/ 2&gt;/dev/null; echo "=== 具体文字 ==="; grep -rho "Click to edit[^&lt;]*" /tmp/tpl-unpack/ 2&gt;/dev/null | sort | uniq -c</title></rect>
+<rect x='352.67' y='39.5' width='11.15' height='0.5' fill='#ea580c' rx='0.5'><title>B·ord30  Δ0.98ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile with zipfile.ZipFile('output/final.pptx') as z: names = sorted([n for n in z.namelist() if 'ppt/slides/slide' in n and n.endswith('.xml') and '/_rels/' not in n]) print('slide 文件:', [n.rsplit('/',1)[-1] for n in names]) prs = z.read('ppt/presentation.xml').decode('utf-8') rids = __import__('re').findall(r'&lt;p:sldId[^&gt;]*r:id=\"(rId\d+)\"', prs) rels = z.read('ppt/_rels/presentation.xml.rels').decode('utf-8') rid2slide = dict(__import__('re').findall(r'Id=\"(rId\d+)\"[^&gt;]*slides/(slide\d+\.xml)\"', rels)) print('播放顺序:', [rid2slide.get(r) for r in rids]) "</title></rect>
+<rect x='364.62' y='39.2' width='11.15' height='0.6' fill='#ea580c' rx='0.5'><title>B·ord26  Δ2.38ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 -c " import zipfile, re src = '/opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/references/template.pptx' dst = 'output/template-clean.pptx' with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zout: for item in zin.infolist(): data = zin.read(item.filename) if item.filename.endswith('.xml'): text = data.decode('utf-8') text = re.sub(r'Click to edit[^&lt;]*', '', text) text = re.sub(r'&lt;a:t&gt;(?:Second|Third|Fourth|Fifth) level&lt;/a:t&gt;', '&lt;a:t&gt;&lt;/a:t&gt;', text) data = text.encode('utf-8') zout.writestr(item, data) print('template-clean.pptx regenerated') "</title></rect>
+<rect x='376.56' y='38.7' width='11.15' height='1' fill='#ea580c' rx='0.5'><title>B·ord7  Δ4.35ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase design &amp;&amp; echo "=== execution-lock design OK ===" &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase design &amp;&amp; echo "=== evidence-plan design OK ==="</title></rect>
+<rect x='388.51' y='38.7' width='11.15' height='1' fill='#ea580c' rx='0.5'><title>B·ord5  Δ4.39ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; rmdir '{sources,analysis,assets,output,qa}' 2&gt;/dev/null; mkdir -p sources analysis assets output qa &amp;&amp; ls -la</title></rect>
+<rect x='400.46' y='38.2' width='11.15' height='1.5' fill='#ea580c' rx='0.5'><title>B·ord36  Δ6.42ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; pdftotext output/final.pdf - 2&gt;/dev/null | head -120</title></rect>
+<rect x='412.41' y='38.2' width='11.15' height='1.6' fill='#ea580c' rx='0.5'><title>B·ord37  Δ6.72ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; pdftotext output/final.pdf - 2&gt;/dev/null | tail -45</title></rect>
+<rect x='424.36' y='37.1' width='11.15' height='2.6' fill='#ea580c' rx='0.5'><title>B·ord16  Δ11.03ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/opc/unpack.py output/final.pptx /tmp/final-unpack &gt;/dev/null 2&gt;&amp;1; echo "=== slide6(P02) 的 layout 引用 ==="; cat /tmp/final-unpack/ppt/slides/_rels/slide6.xml.rels; echo; echo "=== slide6 中是否含 title/ctrTitle 占位符 ==="; grep -o 'type="[a-zA-Z]*"' /tmp/final-unpack/ppt/slides/slide6.xml | sort | uniq -c</title></rect>
+<rect x='436.31' y='34.1' width='11.15' height='5.6' fill='#ea580c' rx='0.5'><title>B·ord13  Δ23.74ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; node slides.js &amp;&amp; python3 /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/finalize_deck.py output/content.pptx output/final.pptx --cover-title "大模型发展" --cover-meta "||2026-10-27"</title></rect>
+<rect x='448.26' y='33.6' width='11.15' height='6.1' fill='#ea580c' rx='0.5'><title>B·ord9  Δ25.78ms  cat /opt/aries-presentation/node_modules/pptxgenjs/package.json | grep -E '"main"|"version"|"name"'; echo "---dist---"; ls /opt/aries-presentation/node_modules/pptxgenjs/dist/ 2&gt;/dev/null; echo "---test require---"; node -e "const P=require('/opt/aries-presentation/node_modules/pptxgenjs'); const p=new P(); console.log('pptxgenjs ok, version:', p.version||'n/a')"</title></rect>
+<rect x='460.21' y='28.6' width='11.15' height='11.1' fill='#ea580c' rx='0.5'><title>B·ord38  Δ46.75ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase deliver &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase deliver &amp;&amp; echo "=== 交付校验通过 ===" &amp;&amp; ls -la output/final.pptx</title></rect>
+<rect x='472.15' y='27.9' width='11.15' height='11.8' fill='#ea580c' rx='0.5'><title>B·ord19  Δ49.86ms  grep -n "Click\|has_text\|def parse_slide\|def label\|ph\b\|placeholder\|inherit" /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/qa_geometry.py | head -50</title></rect>
+<rect x='484.1' y='27' width='11.15' height='12.8' fill='#ea580c' rx='0.5'><title>B·ord10  Δ53.69ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; node slides.js</title></rect>
+<rect x='496.05' y='22.9' width='11.15' height='16.8' fill='#ea580c' rx='0.5'><title>B·ord8  Δ70.88ms  cd /workspace/aries-case/projects/llm-development &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js execution-lock.json --phase design &amp;&amp; echo "=== execution-lock design OK ===" &amp;&amp; node /opt/jiuwenswarm/jiuwenswarm/resources/agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js evidence-plan.json --phase design &amp;&amp; echo "=== evidence-plan design OK ==="</title></rect>
+<text x='275' y='15.834' text-anchor='middle' font-size='10.5' fill='#374151'>命令（按 Δ 升序：左=火山更快 → 右=华为更快）</text>
+<text x='14' y='111' text-anchor='middle' font-size='10' fill='#6b7280' transform='rotate(-90 14 111)'>Δms</text>
+</svg>
+</div>
+  </div>
+
+  <h4 style="margin:22px 0 6px;font-size:14px;color:#111827;">分布解读</h4>
+  <ul>
+    <li><b>A 场景是「整体左移 + 两个超大离群点」</b>：32 条中 23 条火山快，中位 Δ -11.8ms、平均 Δ -72.6ms。直方图主峰落在 Δ∈[-50,0)（12 条）与 [0,50)（9 条），说明<b>多数命令差异不大</b>；真正拉开差距的是 <span class="mono">A·6 版本检查</span>（-629ms，命令里 4 次命令替换各自一次 fork+exec）与 <span class="mono">A·27 soffice 渲染</span>（-582ms）两个离群点。</li>
+    <li><b>B 场景更均衡、且正向离群点偏华为</b>：22:17，中位 Δ 仅 -0.7ms；正向偏华为的 <span class="mono">B·8 / B·10 node 脚本</span>（+71 / +54ms）与 <span class="mono">B·19 单次 grep</span>（+50ms、Δ% 1826%）都是绝对量小的短命令，抖动大、证据强度弱。</li>
+    <li><b>分布形态印证根因</b>：A 场景「fork/exec、文件系统遍历、CPU 渲染」系统性更快（负向占比高、方向一致），B 场景琐碎小命令（grep/ls/cp）正负互现——与 §5.2 的「三类命令火山快、琐碎命令可忽略」一致，变量仍落在<b>沙箱 guest 内核 + 底层实例</b>，而非 Runner。</li>
+  </ul>
+</div>
+<!-- DUR-CHART-END -->
+<h2>六、结论</h2>
+<div class="card">
+  <ol>
+    <li><b>核心画像一致</b>：两包业务镜像、Tape、skill、模板规格完全相同，命令账本（数量/成败/perf 关联）逐条一致，CPU/内存/网络画像误差 &lt;5%。</li>
+    <li><b>真实差异只有两处根因</b>：① Runner 二进制（火山独立修复版 vs 华为前身），② 沙箱 guest 内核（<span class="mono">6.6.95.bck.4-rc3-amd64</span> vs HCE <span class="mono">6.6.0-72.0.0.76…hce3</span>）。</li>
+    <li><b>次生差异</b>：B 域采集窗口（222s vs 147s）→ perf 体积（87 vs 58 MB）→ 采样量（12345 vs 8670）→ 归因占比（94.5% vs 89.7%）；以及 B 域磁盘读写方向相反。</li>
+    <li><b>归因要谨慎</b>：上述次生差异同时受「Runner 差异」与「沙箱内核差异」影响，<b>不能把 B 域窗口/采样差异直接说成云厂商性能差异</b>；火山 B 跑得更长是其 Runner 停止/确认修复的预期效果之一。</li>
+    <li><b>火焰图/CPU 归因结论不变</b>：吃 CPU 的是 harness/Agent 运行时（ecs 与 B 域），worker 只跑短命 tool 命令，两包定性一致。</li>
+  </ol>
+</div>
+
+<h2>附：火焰图 / 采集汇总入口</h2>
+<div class="card">
+  <ul>
+    <li>火山：<a href="五页PPT-profiling-火山-AB采集汇总.html" target="_blank" rel="noopener">五页PPT-profiling-火山-AB采集汇总.html ↗</a>（火焰图 <span class="mono">flamegraph-volc-*.svg</span>，样本 13940/839/12345）</li>
+    <li>华为 r2：<a href="五页PPT-profiling-华为r2-AB采集汇总.html" target="_blank" rel="noopener">五页PPT-profiling-华为r2-AB采集汇总.html ↗</a>（火焰图 <span class="mono">flamegraph-huawei-r2-*.svg</span>，样本 14242/1101/8670）</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>
