@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>华为 Gray 沙箱 · 自定义 Python 基准负载 · 交付说明</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #273449;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --code: #0b1220;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.65; padding-bottom: 80px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px; }
+  header { padding: 28px 0 22px; border-bottom: 1px solid #334155; margin-bottom: 26px; }
+  h1 { font-size: 26px; margin: 0 0 8px; color: #f8fafc; }
+  .sub { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 19px; margin: 40px 0 14px; color: #f1f5f9; border-left: 4px solid var(--accent); padding-left: 12px; }
+  h3 { font-size: 15px; margin: 24px 0 8px; color: #cbd5e1; }
+  p { margin: 10px 0; }
+  code, .c {
+    font-family: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 13px; background: var(--code); padding: 1px 6px; border-radius: 4px;
+    color: #7dd3fc; white-space: pre-wrap; word-break: break-all;
+  }
+  pre {
+    background: var(--code); border: 1px solid #334155; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; color: #dbeafe; display: block; }
+  .cmd-prompt::before { content: "$ "; color: #475569; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #334155; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #f1f5f9; font-weight: 600; }
+  tr:nth-child(even) td { background: #162032; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: rgba(52,211,153,.15); color: var(--ok); }
+  .pill.warn { background: rgba(251,191,36,.15); color: var(--warn); }
+  .pill.bad { background: rgba(248,113,113,.15); color: var(--bad); }
+  .note {
+    background: rgba(56,189,248,.08); border: 1px solid rgba(56,189,248,.25);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .warnbox {
+    background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.3);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .okbox {
+    background: rgba(52,211,153,.08); border: 1px solid rgba(52,211,153,.3);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .kv { color: var(--muted); font-size: 12.5px; word-break: break-all; }
+  .mono { font-family: "SF Mono", Consolas, monospace; }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li { margin: 4px 0; }
+  .tag { color: #64748b; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>华为 Gray 沙箱 · 自定义 Python 基准负载 · 交付说明</h1>
+  <div class="sub">生成日期：2026-11-10 &nbsp;·&nbsp; 架构：x86 (amd64) + arm (arm64) &nbsp;·&nbsp; 环境：华为 Gray 控制面（Cloud Hypervisor 微虚拟机）</div>
+</header>
+
+<h2>一、一句话结论</h2>
+<p>已把一份<b>自计时 Python 基准</b>打进华为 Gray 沙箱镜像——四个场景：<b>斐波那契递归 + 内存分配拷贝 + 文件读写 + fork 多子进程（64 进程）</b>。<b>x86 与 arm64 双架构</b>均已 build 并推送到 SWR、均已通过控制面 API 注册为模板、均已实测拉起并统计 <b>10 组</b>耗时。业务进程有两条拉起通道：控制面侧的 envd <code>/process.Process/Start</code>，以及宿主侧的 <code>sandbox-ctl exec</code>。arm 侧已用<b>自定义编译内核（6.6.0）</b>替换平台默认内核落地并验证。</p>
+
+<h2>二、产物清单</h2>
+<table>
+  <thead><tr><th>类型</th><th>架构</th><th>值</th></tr></thead>
+  <tbody>
+    <tr>
+      <td rowspan="2">镜像（SWR digest）</td>
+      <td>x86 / amd64</td>
+      <td class="kv">swr.cn-southwest-2.myhuaweicloud.com/benchmark-zhoutao/aries-jiuwenswarm@<b>sha256:07f2e9b22ddd9495cd44f1f78a9f30346b889fe5e93db6764881c3d3b698f093</b><br>
+      <span class="tag">tag: quickstart-workload-x86-20261110T031215Z</span></td>
+    </tr>
+    <tr>
+      <td>arm / arm64</td>
+      <td class="kv">swr.cn-southwest-2.myhuaweicloud.com/benchmark-zhoutao/aries-jiuwenswarm@<b>sha256:798a0f4821bbb7293027abb9be3d09e5a4e3a6354e60041dab7fc9ce7a1d83ab</b><br>
+      <span class="tag">tag: quickstart-workload-arm-20261110T031215Z</span></td>
+    </tr>
+    <tr>
+      <td rowspan="2">模板（控制面）</td>
+      <td>x86</td>
+      <td class="kv">name=<b>aries-workload-x86-d6e178d1</b><br>template_id=<b>fe896c5b-15df-4c98-bd3a-3cc18c1799f4</b><br>build_id=<b>23d8c42c-af08-44fd-b961-1bf56f608032</b></td>
+    </tr>
+    <tr>
+      <td>arm（自定义内核快照）</td>
+      <td class="kv">name=<b>aries-workload-arm-4001e78c</b><br>template_id=<b>9f8386e4-9354-4182-9643-0948c953e7b3</b><br>build_id=<b>a7b6e395-977d-4fb4-8794-539b5eb8afe5</b></td>
+    </tr>
+    <tr>
+      <td>arm 自定义内核</td>
+      <td>arm / arm64</td>
+      <td class="kv">宿主机 67 上自编译：<code>/home/gzk/kernel</code> → <code>arch/arm64/boot/Image</code>（<code>6.6.0 #4 SMP</code>）<br>替换到 <code>/opt/sandbox/guest-runtime/vmlinux/vmlinux-26.9.0.1.B006</code>（sha256 <code>edf79a5d…</code>）</td>
+    </tr>
+    <tr>
+      <td>配置</td>
+      <td>x86 + arm</td>
+      <td class="kv">/home/ARIES-Huawei-Gray-Profiling-Quickstart/huawei.private.json 的 <code>targets.x86</code> / <code>targets.arm</code> 已切到上表模板。<br>每次切换自动备份（<code>huawei.private.json.bak-&lt;TS&gt;</code>）</td>
+    </tr>
+  </tbody>
+</table>
+<p>资源规格固定为 <b>4 vCPU / 8192 MiB</b>，仓库固定为 <code>benchmark-zhoutao/aries-jiuwenswarm</code>，控制面固定为 <code>https://agentsandbox-gray.cn-southwest-2.myhuaweicloud.com</code>。</p>
+
+<h2>三、workload 是什么（四场景）</h2>
+<p><code>/opt/aries/workload.py</code>，自计时、从环境变量读参数、末尾打印单行 JSON。四个场景：</p>
+<table>
+  <thead><tr><th>场景</th><th>函数</th><th>什么操作</th><th>指标</th></tr></thead>
+  <tbody>
+    <tr><td><b>斐波那契</b></td><td><code>bench_fib</code></td><td>递归 <code>fib(FIB_N)</code> 重复 <code>FIB_ITERS</code> 次，纯 CPU</td><td><code>fib_s</code></td></tr>
+    <tr><td><b>内存拷贝</b></td><td><code>bench_memory</code></td><td>分配 <code>MEM_MB</code> MiB ×2 块，整块拷贝 <code>MEM_COPIES</code> 次</td><td><code>memory_s</code></td></tr>
+    <tr><td><b>文件读写</b></td><td><code>bench_fileio</code></td><td>写 <code>FILE_MB</code> MiB 临时文件再读回，<code>FILE_ITERS</code> 轮</td><td><code>fileio_s</code></td></tr>
+    <tr><td><b>fork 多进程</b></td><td><code>bench_fork</code></td><td>fork <code>FORK_PROCS</code>（默认 64）个子进程，每个做 <code>fib(FIB_N)×(FIB_ITERS//2)</code>（CPU 量减半），父进程 waitpid 全部回收</td><td><code>fork_s</code></td></tr>
+  </tbody>
+</table>
+<p><b>fork 场景语义</b>：测多进程 <code>fork</code>+<code>waitpid</code> 开销与并发 CPU 调度扩展。父进程从 fork 第一个子进程前计时，到全部子进程回收为止。当前配置 <code>FORK_PROCS=64</code>、每个子进程 fib 迭代减半（<code>FIB_ITERS//2</code>），总 CPU 量 = 64×10 = 640 次 fib 迭代 = 32× 主 fib 场景（20 次），分摊到 4 vCPU → <code>fork_s ≈ 8× fib_s</code>。</p>
+<pre><code># 完整输出示例（JSON 单行，全参数）
+{"workload": {"fib_s": 3.567, "memory_s": 0.240, "fileio_s": 0.041,
+              "fork_s": 28.338, "total_s": 32.185, "process_s": 32.185, "loops": 1}}
+# total_s = fib_s + memory_s + fileio_s + fork_s</code></pre>
+
+<h2>四、镜像是怎么创建、放到哪里的</h2>
+<h3>4.1 构建机与环境</h3>
+<table>
+  <thead><tr><th>项</th><th>值</th></tr></thead>
+  <tbody>
+    <tr><td>构建机</td><td class="mono">1.95.10.147 : 38228 &nbsp;(SSH root@1.95.10.147)</td></tr>
+    <tr><td>操作系统</td><td>Huawei Cloud EulerOS 3.0 (x86_64)</td></tr>
+    <tr><td>Docker</td><td>29.9.3（overlay2）</td></tr>
+    <tr><td>Buildx</td><td>v0.38.2（arm64 派生用 legacy builder <code>DOCKER_BUILDKIT=0</code>，仅 COPY 无需 qemu）</td></tr>
+  </tbody>
+</table>
+
+<h3>4.2 基镜像（必须继承 source_image）</h3>
+<p>派生镜像<b>必须 <code>FROM</code> 平台基镜像</b>（Cloud Hypervisor 微虚拟机，非普通容器）。</p>
+<pre><code># x86 基镜像
+swr.cn-southwest-2.myhuaweicloud.com/benchmark-zhoutao/aries-jiuwenswarm:0.2.3-e2c9d519-image8-presentation1-profiling-20261103-r2@sha256:b5229f0808e7bae98895da68c8dc4694801820464bc63d6d31bfff4e0033092e
+# arm 基镜像
+swr.cn-southwest-2.myhuaweicloud.com/benchmark-zhoutao/aries-jiuwenswarm:0.2.3-e2c9d519-image8-presentation1-arm64-1-profiling-20261103-r2@sha256:cd67c4efd7264c4b5a8e2a1d9f46bfbc69d302c772a5bbe724c58a5625be6a10</code></pre>
+
+<h3>4.3 派生镜像定义（Dockerfile.workload）</h3>
+<pre><code>ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY workload.py /opt/aries/workload.py
+# 注意：不写 ENTRYPOINT —— 平台会忽略镜像 ENTRYPOINT</code></pre>
+
+<h3>4.4 构建 + 推送</h3>
+<pre><code class="cmd-prompt"># 复用上一版 workload 镜像作 base，仅追加一个 COPY 层（~3KB），push 也增量
+DOCKER_BUILDKIT=0 docker build -f Dockerfile.workload \
+  --build-arg BASE_IMAGE="&lt;旧 workload 镜像&gt;" \
+  -t …:quickstart-workload-&lt;arch&gt;-&lt;TS&gt; /home/workload-build/
+docker push …:quickstart-workload-&lt;arch&gt;-&lt;TS&gt;</code></pre>
+
+<h2>五、镜像是怎么“上传为模板”的（控制面 API）</h2>
+<p>“注册成模板”通过华为 Gray 控制面 REST API 三步完成（脚本 <code>mk_template.py</code>）。</p>
+<pre><code># 1) 创建模板 → 返回 templateID / buildID
+POST /v3/templates
+Header: X-API-Key: ${api_key}
+{ "name": "aries-workload-&lt;arch&gt;-&lt;suffix&gt;", "cpuCount": 4, "memoryMB": 8192,
+  "gatewayID": "34097c21-1f1f-4653-9e7c-cc8ae1bc98a7", "arch": "x86_64" }   # 或 arm64
+
+# 2) 提交镜像 Build（fromImage = 新 digest）
+POST /v2/templates/{template_id}/builds/{build_id}
+{ "fromImage": "swr.../aries-jiuwenswarm@sha256:07f2e9b2...", ... }
+
+# 3) 轮询直到 ready
+GET /templates/{template_id}/builds/{build_id}   # building → ready</code></pre>
+<p class="note">Build 阶段平台用 <code>fromImage</code> <b>冷启动</b>一个 builder 沙箱 → 执行 steps → readyCmd 就绪 → <b>打内存快照</b>。之后 create 沙箱就是恢复这份快照（见下节）。</p>
+
+<h2>六、沙箱是怎么被“拉起”的</h2>
+<div class="warnbox">
+  <b>关键机制结论（实测确认）：</b>华为 Gray 沙箱是 Cloud Hypervisor 微虚拟机。沙箱 PID 1 是平台注入的 <code>/sbin/init</code>，它启动平台注入的 <code>/opt/sandbox-runtime/bin/envd -port 49983</code>。<b>镜像 ENTRYPOINT 被平台完全忽略</b>；<b>常规 create 走 <code>--restore</code> 快照恢复</b>，内核已包含在快照里，不是冷启动。
+</div>
+<p>业务进程有<b>两条</b>执行通道，最终都到达沙箱内同一个 runtime：</p>
+<ul>
+  <li><b>控制面/网关侧</b>：envd 的 <code>/process.Process/Start</code>（<code>sandbox_run.py</code> 与 ARIES harness 的同一机制，走 Gateway HTTP）。</li>
+  <li><b>宿主侧</b>：<code>sandbox-ctl exec</code>（走本地控制套接字，是本文档第八节的手动入口）。</li>
+</ul>
+<h3>6.1 快照恢复 vs 冷启动（决定内核能否替换）</h3>
+<pre><code># 常规 create（快照恢复，内核在快照里）：
+sandbox-ctl run --sandbox-id &lt;uuid&gt; --config &lt;host.yaml&gt; --restore file://&lt;hash&gt;.snapshot …
+
+# 冷启动（build 阶段）读 boot.kernel = /etc/conductor/conductor.yaml 的 sandbox.boot.kernel</code></pre>
+<p class="note">所以：<b>改 <code>/opt/sandbox/guest-runtime/vmlinux/vmlinux-26.9.0.1.B006</code> 文件本身不影响已打好的快照</b>；要换内核，必须让新快照在<b>冷启动（build）阶段</b>用新内核。</p>
+
+<h2>七、10 组基准数据（全参数单轮，含 fork 64 进程）</h2>
+<p>参数：<code>FIB_N=32 FIB_ITERS=20 MEM_MB=256 MEM_COPIES=4 FILE_MB=512 FILE_ITERS=1 FORK_PROCS=64</code>（每个子进程 fib 迭代减半 = 10 次），各跑 10 组，均经 host 侧 <code>sandbox-ctl exec</code> 实测。</p>
+<table>
+  <thead><tr><th>分项</th><th>架构</th><th>均值(s)</th><th>标准差</th><th>min</th><th>max</th><th>arm/x86 倍率</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td>x86</td><td>3.567</td><td>0.051</td><td>3.518</td><td>3.680</td><td rowspan="2" style="text-align:center">1.93x</td></tr>
+    <tr><td>fib_s</td><td>arm</td><td>6.890</td><td>0.029</td><td>6.871</td><td>6.970</td></tr>
+    <tr><td>memory_s</td><td>x86</td><td>0.240</td><td>0.002</td><td>0.237</td><td>0.244</td><td rowspan="2" style="text-align:center"><span class="pill ok">0.72x</span></td></tr>
+    <tr><td>memory_s</td><td>arm</td><td>0.173</td><td>0.016</td><td>0.159</td><td>0.202</td></tr>
+    <tr><td>fileio_s</td><td>x86</td><td>0.041</td><td>0.006</td><td>0.032</td><td>0.048</td><td rowspan="2" style="text-align:center">2.37x</td></tr>
+    <tr><td>fileio_s</td><td>arm</td><td>0.096</td><td>0.016</td><td>0.087</td><td>0.137</td></tr>
+    <tr><td><b>fork_s</b></td><td>x86</td><td><b>28.338</b></td><td>0.099</td><td>28.238</td><td>28.593</td><td rowspan="2" style="text-align:center">1.94x</td></tr>
+    <tr><td><b>fork_s</b></td><td>arm</td><td><b>55.047</b></td><td>0.051</td><td>54.990</td><td>55.139</td></tr>
+    <tr><td><b>total_s</b></td><td>x86</td><td><b>32.185</b></td><td>0.136</td><td>32.055</td><td>32.489</td><td rowspan="2" style="text-align:center"><b>1.93x</b></td></tr>
+    <tr><td><b>total_s</b></td><td>arm</td><td><b>62.206</b></td><td>0.066</td><td>62.114</td><td>62.316</td></tr>
+  </tbody>
+</table>
+
+<h3>7.1 关键解读</h3>
+<ul>
+  <li><b>fork_s ≈ 8× fib_s</b>（x86 28.338/3.567=7.94x；arm 55.047/6.890=7.99x）：64 进程 × 10 迭代 = 640 次 fib = 32× 主 fib 场景的 CPU 量，4 vCPU 分摊 → 正好 8× 墙钟。<b>扩展完全线性、fork/waitpid 与 64 进程调度的额外开销可忽略</b>。</li>
+  <li><b>fork 的 arm/x86 倍率 = 1.94x ≈ fib 的 1.93x</b>：多进程并发扩展是架构无关的，arm 相对 x86 的差距（~1.9x）与单线程 CPU 一致，没有因 64 进程调度引入额外差距。</li>
+  <li><b>memory 项 arm 反而更快（0.72x）</b>：自定义内核下 arm 内存拷贝稳定在 0.16–0.20s，低于 x86 的 0.24s。</li>
+</ul>
+<div class="warnbox">
+  <b>warmup 提醒：</b>快照恢复后<b>首次</b>全参数运行会触发 UFFD 懒加载，<code>memory_s</code> 异常偏高（实测 arm 首轮 ~6.7s、x86 首轮 ~0.56s），随后稳定到上表数值。正式对比建议先跑一次预热、再取 10 组。
+</div>
+
+<h2>八、自定义内核成果（arm 侧）</h2>
+<div class="okbox">
+  <b>已成功：</b>67 节点上用自编译内核 <code>6.6.0 #4 SMP</code> 替换平台默认内核，重新 build 的 arm 快照中已带该内核，沙箱 <code>uname -a</code> 已验证。<code>memory_s</code> 从平台内核的 ~5.8s 降到 ~0.2s。
+</div>
+<h3>8.1 落库路径与修复过程</h3>
+<ol>
+  <li>在 67 上编译内核：源码树 <code>/home/gzk/kernel</code>，产物 <code>arch/arm64/boot/Image</code>（ARM64 boot Image, 4K pages）。</li>
+  <li>用 <code>Image</code> 覆盖平台内核文件 <code>/opt/sandbox/guest-runtime/vmlinux/vmlinux-26.9.0.1.B006</code>。</li>
+  <li>第一次 build 失败：内核引导到 init 后，<code>sandbox-init</code> 经 vsock 握手主机超时 → kernel panic。</li>
+  <li>根因：<code>CONFIG_VIRTIO_VSOCKETS=m</code>（模块）未内建，EROFS 只读 rootfs 不加载模块 → <code>/dev/vsock</code> 不存在。</li>
+  <li>修复：<code>CONFIG_VIRTIO_VSOCKETS=m → y</code>，重新编译，覆盖文件，再次 build 成功。</li>
+</ol>
+<pre><code># 67 上执行
+cd /home/gzk/kernel
+sed -i 's/^CONFIG_VIRTIO_VSOCKETS=m$/CONFIG_VIRTIO_VSOCKETS=y/' .config
+make -j$(nproc) Image
+cp arch/arm64/boot/Image /opt/sandbox/guest-runtime/vmlinux/vmlinux-26.9.0.1.B006</code></pre>
+
+<h2>九、Host 上的操作命令（sandbox-ctl exec）</h2>
+<p>沙箱由 <code>run.sh create</code> 在控制面拉起后，落点宿主固定：<b>x86 → 10.30.33.139，arm → 10.30.33.67</b>。在对应节点用 <code>sandbox-ctl exec</code> 登入 / 拉起 workload。</p>
+
+<h3>9.1 关键事实</h3>
+<table>
+  <thead><tr><th>项</th><th>值</th></tr></thead>
+  <tbody>
+    <tr><td>sandbox-ctl 二进制（两节点相同）</td><td class="mono">/opt/sandbox/bin/sandbox-ctl</td></tr>
+    <tr><td>run-root</td><td class="mono">/run/sandbox/sandboxes</td></tr>
+    <tr><td>sandbox-id 取值</td><td><code>/run/sandbox/sandboxes/&lt;uuid&gt;</code> 的目录名（<code>ls /run/sandbox/sandboxes/</code> 可见）</td></tr>
+  </tbody>
+</table>
+<div class="warnbox">
+  控制面 <code>run.sh create</code> 返回的 <code>api_session_id</code> <b>≠</b> sandbox-ctl 的 <code>--sandbox-id</code>。后者是宿主上 uuid 目录名。
+</div>
+
+<h3>9.2 登入沙箱（交互 shell）</h3>
+<pre><code># x86（在 10.30.33.139 上执行）—— sandbox-id 以 /run/sandbox/sandboxes/ 下实际 uuid 为准
+/opt/sandbox/bin/sandbox-ctl exec --run-root /run/sandbox/sandboxes --sandbox-id &lt;x86-uuid&gt; --tty -- /bin/sh
+
+# arm（在 10.30.33.67 上执行）
+/opt/sandbox/bin/sandbox-ctl exec --run-root /run/sandbox/sandboxes --sandbox-id &lt;arm-uuid&gt; --tty -- /bin/sh</code></pre>
+
+<h3>9.3 手动拉起 workload（自计时基准）</h3>
+<pre><code># 冒烟（fork 少量进程，几秒出结果）
+/opt/sandbox/bin/sandbox-ctl exec --run-root /run/sandbox/sandboxes --sandbox-id &lt;uuid&gt; \
+  --env FIB_N=25 --env FIB_ITERS=3 --env MEM_MB=32 --env MEM_COPIES=2 \
+  --env FILE_MB=16 --env FILE_ITERS=1 --env FORK_PROCS=4 --env TOTAL_SECONDS=0 \
+  -- /usr/bin/python3 -I /opt/aries/workload.py
+
+# 全参数（x86 约 32s / arm 约 62s；FORK_PROCS 默认 64，子进程迭代减半）
+/opt/sandbox/bin/sandbox-ctl exec --run-root /run/sandbox/sandboxes --sandbox-id &lt;uuid&gt; \
+  --env FIB_N=32 --env FIB_ITERS=20 --env MEM_MB=256 --env MEM_COPIES=4 \
+  --env FILE_MB=512 --env FILE_ITERS=1 --env FORK_PROCS=64 --env TOTAL_SECONDS=0 \
+  -- /usr/bin/python3 -I /opt/aries/workload.py</code></pre>
+<p class="note">exec 用 <code>--env KEY=VALUE</code>（可重复）传环境变量，等价 shell 的 <code>export</code>；命令与参数放 <code>--</code> 之后。输出为单行 JSON。</p>
+
+<h3>9.4 workload 可调环境变量</h3>
+<table>
+  <thead><tr><th>变量</th><th>含义</th><th>默认</th></tr></thead>
+  <tbody>
+    <tr><td><code>FIB_N</code></td><td>斐波那契递归参数 n</td><td>32</td></tr>
+    <tr><td><code>FIB_ITERS</code></td><td>斐波那契重复次数</td><td>20</td></tr>
+    <tr><td><code>MEM_MB</code></td><td>单次申请内存（MiB）</td><td>256</td></tr>
+    <tr><td><code>MEM_COPIES</code></td><td>整段内存拷贝次数</td><td>4</td></tr>
+    <tr><td><code>FILE_MB</code></td><td>文件读写大小（MiB）</td><td>512</td></tr>
+    <tr><td><code>FILE_ITERS</code></td><td>文件读写轮数</td><td>1</td></tr>
+    <tr><td><code>FORK_PROCS</code></td><td>fork 的子进程数（每个子进程 fib 迭代 = FIB_ITERS//2）</td><td>64</td></tr>
+    <tr><td><code>TOTAL_SECONDS</code></td><td>循环总时长（0=单轮；&gt;0 则循环跑）</td><td>0</td></tr>
+  </tbody>
+</table>
+
+<h2>十、复现 / 接入 checklist</h2>
+<ol>
+  <li>在带 Docker + SWR 权限的机器登入 SWR，<code>docker pull</code> 对应架构基镜像（固定 digest）。</li>
+  <li>用 <code>Dockerfile.workload</code>（<code>COPY workload.py /opt/aries/workload.py</code>）build 并 push，记下 digest。</li>
+  <li>用 <code>mk_template.py</code> 注册新模板：<code>POST /v3/templates</code> → <code>POST /v2/templates/{t}/builds/{b}</code> → 轮询 ready（此步冷启动打快照）。</li>
+  <li>把新 <code>template_id/build_id/image</code> 写入 <code>huawei.private.json</code> 对应 target，先备份、再 <code>run.sh check</code> 双通过。</li>
+  <li>投产时把“拉起命令”改成 <code>/usr/bin/python3 -I /opt/aries/workload.py</code>（控制面走 envd，宿主手动走 sandbox-ctl exec）。<b>不要指望镜像 entrypoint 自动跑。</b></li>
+  <li>（可选）自定义内核：编译时必须 <code>CONFIG_VIRTIO_VSOCKETS=y</code>（内建），覆盖 <code>vmlinux-26.9.0.1.B006</code> 后<b>重新 build 才能打进快照</b>。</li>
+</ol>
+
+<footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
+  本文件由执行过程自动整理。事实来源：构建机实际操作日志、沙箱内 boot 侦察、控制面 API 响应。构建机留存脚本：<code>sandbox.py</code>、<code>mk_template.py</code>、<code>switch_config.py</code>、<code>run_workload.py</code>、<code>delete_sandbox.py</code>（均在 /home/ARIES-Huawei-Gray-Profiling-Quickstart/）。
+</footer>
+
+</div>
+</body>
+</html>

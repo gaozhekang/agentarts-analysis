@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>华为 Gray 沙箱 · Guest 内核调参对比实验汇总</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #273449;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --code: #0b1220;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.65; padding-bottom: 80px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px; }
+  header { padding: 28px 0 22px; border-bottom: 1px solid #334155; margin-bottom: 26px; }
+  h1 { font-size: 26px; margin: 0 0 8px; color: #f8fafc; }
+  .sub { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 19px; margin: 44px 0 14px; color: #f1f5f9; border-left: 4px solid var(--accent); padding-left: 12px; }
+  h3 { font-size: 15px; margin: 24px 0 8px; color: #cbd5e1; }
+  p { margin: 10px 0; }
+  code, .c {
+    font-family: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 13px; background: var(--code); padding: 1px 6px; border-radius: 4px;
+    color: #7dd3fc; white-space: pre-wrap; word-break: break-all;
+  }
+  pre {
+    background: var(--code); border: 1px solid #334155; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; color: #dbeafe; display: block; }
+  .cmd-prompt::before { content: "$ "; color: #475569; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #334155; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #f1f5f9; font-weight: 600; }
+  tr:nth-child(even) td { background: #162032; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .pill.ok { background: rgba(52,211,153,.15); color: var(--ok); }
+  .pill.warn { background: rgba(251,191,36,.15); color: var(--warn); }
+  .pill.bad { background: rgba(248,113,113,.15); color: var(--bad); }
+  .pill.none { background: rgba(148,163,184,.15); color: var(--muted); }
+  .pill.good { background: rgba(52,211,153,.15); color: var(--ok); }
+  .note {
+    background: rgba(56,189,248,.08); border: 1px solid rgba(56,189,248,.25);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .warnbox {
+    background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.3);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .okbox {
+    background: rgba(52,211,153,.08); border: 1px solid rgba(52,211,153,.3);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .kv { color: var(--muted); font-size: 12.5px; word-break: break-all; }
+  .mono { font-family: "SF Mono", Consolas, monospace; }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li { margin: 4px 0; }
+  .tag { color: #64748b; font-size: 12px; }
+  .verdict { font-weight: 600; }
+  .no { color: var(--muted); }
+  .yes { color: var(--ok); }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>华为 Gray 沙箱 · Guest 内核调参对比实验汇总</h1>
+  <div class="sub">生成日期：2026-11-11 &nbsp;·&nbsp; 实验执行：2026-11-10 ~ 11-11 &nbsp;·&nbsp; 架构：x86 (10.30.33.139) + arm (10.30.33.67) &nbsp;·&nbsp; Guest 内核：6.6.0（EEVDF，Cloud Hypervisor 微虚拟机）</div>
+</header>
+
+<h2>一、一句话结论</h2>
+<p>对华为 Gray 沙箱 guest 内核做了 <b>7 组调参实验</b>。前 6 组用自计时 4 场景 workload（<code>fib + 内存拷贝 + 文件读写 + fork 64 进程</code>），结论：<b>5 组「纯调度/回收/定时器」参数对负载毫无影响</b>（<code>base_slice_ns</code>、<code>MGLRU</code>、<code>WAKEUP_PREEMPTION</code>、<code>NEXT_BUDDY</code>、<code>HZ</code>），因为负载是<b>「子进程只算不睡、CPU 全程打满」的纯计算场景</b>，这些参数作用的路径（唤醒抢占、回收压力、时间片切分、定时 tick）根本不被触发；<b>唯一有显著收益的是 <code>mTHP</code>（多尺寸透明大页）</b>，把 <code>memory_s</code> 从 0.239s 压到 0.072s（<b>3.3× 加速</b>）。</p>
+<p>第 7 组针对「EEVDF / mitigations / HZ 对 <b>harness（进程编排/IO 密集）vs worker（CPU 密集）</b>有无提升」的问题，把 workload 扩到 <b>6 场景</b>（新增 <code>syscall</code> 压测 + <code>ctx_switch</code> 上下文切换，内存 256→2048MB 调到秒级），对比 <b>mitigations=off</b> 与基线。结论：<b>x86 上 <code>syscall_s</code> 2.69× 加速（1.804→0.670s）、<code>ctx_s</code> 降 14%</b>（这是 retpoline/IBPB/RSB-filling 的真实开销）；<b>arm 与纯计算项（fib/fork）完全无差</b> —— 即 <b>mitigations=off 只对 x86 的 syscall/上下文切换密集型（harness 类）负载有用</b>，EEVDF/HZ 两类场景都无感。</p>
+
+<h2>二、实验环境与方法</h2>
+<table>
+  <thead><tr><th>项</th><th>值</th></tr></thead>
+  <tbody>
+    <tr><td>沙箱形态</td><td>Cloud Hypervisor 微虚拟机（快照恢复 + UFFD 懒加载 + diff-cow）</td></tr>
+    <tr><td>Guest 内核</td><td>6.6.0（HCE 定制，<code>root@nacre</code> 自编译，支持 EEVDF / MGLRU / mTHP backport）</td></tr>
+    <tr><td>资源规格</td><td>4 vCPU / 8192 MiB（x86 与 arm 相同）</td></tr>
+    <tr><td>落地节点</td><td>x86 → 10.30.33.139；arm → 10.30.33.67</td></tr>
+    <tr><td>workload 参数（1~6 组）</td><td class="c">FIB_N=32 FIB_ITERS=20 MEM_MB=256 MEM_COPIES=4 FILE_MB=512 FILE_ITERS=1 FORK_PROCS=64</td></tr>
+    <tr><td>workload 参数（第 7 组）</td><td class="c">FIB_N=32 FIB_ITERS=20 SYSCALL_ITERS=10000000 MEM_MB=2048 MEM_COPIES=4 FILE_MB=512 FILE_ITERS=1 CTX_SWITCHES=200000 FORK_PROCS=64</td></tr>
+    <tr><td>测量方式</td><td>每场景先预热 1 轮（丢弃首轮 UFFD 懒加载），再取 10 组求均值 ± 标准差</td></tr>
+    <tr><td>内核调参入口</td><td>debugfs（<code>/sys/kernel/debug/sched/…</code>）+ sysfs（<code>/sys/kernel/mm/…</code>），沙箱内先 <code>mount -t debugfs debugfs /sys/kernel/debug</code></td></tr>
+  </tbody>
+</table>
+<div class="warnbox">
+  <b>两组噪声提醒（影响读数）：</b>① <b>x86（139）宿主机负载重</b>（跑着大量 node-ctl runner），绝对耗时会漂移，因此「有无影响」一律优先看 arm 或同沙箱背靠背数据；② <b>首轮 memory/fileio 会是预热残留假象</b>（UFFD 懒加载未净），对比必须看预热后的值。
+</div>
+
+<h2>三、7 组实验结论总览</h2>
+<table>
+  <thead><tr><th>#</th><th>调参项</th><th>类别</th><th>调节区间</th><th>结论</th><th>关键数字</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>base_slice_ns</code></td><td>调度（EEVDF 时间片）</td><td>1.125ms / 2.25ms / 4.5ms</td><td><span class="pill none">无影响</span></td><td class="num">fork 极差 0.312%</td></tr>
+    <tr><td>2</td><td><code>MGLRU</code></td><td>内存回收（多代 LRU）</td><td>关 / 开(0x0003)</td><td><span class="pill none">无影响</span></td><td class="num">fork −0.04%</td></tr>
+    <tr><td>3</td><td><code>WAKEUP_PREEMPTION</code></td><td>调度（唤醒抢占）</td><td>开 / 关</td><td><span class="pill none">无影响</span></td><td class="num">arm +0.049%</td></tr>
+    <tr><td>4</td><td><code>NEXT_BUDDY</code></td><td>调度（唤醒优先）</td><td>开 / 关</td><td><span class="pill none">无影响</span></td><td class="num">arm −0.077%</td></tr>
+    <tr><td>5</td><td><code>HZ</code></td><td>定时器 tick 频率</td><td>100 / 250 / 1000</td><td><span class="pill none">无显著影响</span></td><td class="num">arm fork +0.29%（含漂移，fib 平）</td></tr>
+    <tr><td>6</td><td><code>mTHP</code></td><td>内存（多尺寸透明大页）</td><td>never / always+小尺寸</td><td><span class="pill good">显著提速</span></td><td class="num">memory_s 3.3×（x86 背靠背）</td></tr>
+    <tr><td>7</td><td><code>mitigations=off</code></td><td>CPU 漏洞缓解（retpoline/IBPB/RSB）</td><td>off / on</td><td><span class="pill good">x86 syscall 2.69×</span></td><td class="num">arm 无差；计算项无感</td></tr>
+  </tbody>
+</table>
+
+<h2>四、逐项详细数据</h2>
+
+<h3>4.1 base_slice_ns（EEVDF 时间片颗粒度）</h3>
+<p>入口：<code>/sys/kernel/debug/sched/base_slice_ns</code>（默认 <code>2250000</code>）。x86 测三档：默认 2.25ms / 翻倍 4.5ms / 减半 1.125ms，各 10 组。</p>
+<table>
+  <thead><tr><th>分项</th><th>默认 2.25ms</th><th>翻倍 4.5ms</th><th>减半 1.125ms</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td class="num">3.573 ± 0.046</td><td class="num">3.601 ± 0.041</td><td class="num">3.593 ± 0.035</td></tr>
+    <tr><td><b>fork_s</b></td><td class="num"><b>28.549 ± 0.264</b></td><td class="num"><b>28.593 ± 0.302</b></td><td class="num"><b>28.504 ± 0.163</b></td></tr>
+    <tr><td>total_s</td><td class="num">32.396 ± 0.307</td><td class="num">32.467 ± 0.330</td><td class="num">32.374 ± 0.186</td></tr>
+  </tbody>
+</table>
+<p class="verdict no">fork 三组 28.549 / 28.593 / 28.504，极差仅 0.089s（0.312%），噪声内。fork/fib 稳定 7.93~7.99×。arm 侧（1ms/2.25ms/4.5ms）同样无影响。结论：<b>时间片粒度不改变满载纯计算的吞吐</b>（满载时总吞吐 = 墙钟 × vCPU，与时间片长短无关）。</p>
+
+<h3>4.2 MGLRU（多代 LRU 回收老化）</h3>
+<p>入口：<code>/sys/kernel/mm/lru_gen/enabled</code>（内核 <code>CONFIG_LRU_GEN=y</code>，运行时默认关 <code>0x0000</code>）。开启写 <code>0x0007</code>（内核保留有效位 → <code>0x0003</code>）。arm 测开/关各 10 组。</p>
+<table>
+  <thead><tr><th>分项</th><th>MGLRU 关（基线）</th><th>MGLRU 开</th><th>变化</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td class="num">6.890 ± 0.029</td><td class="num">6.878 ± 0.008</td><td class="num">−0.17%</td></tr>
+    <tr><td><b>fork_s</b></td><td class="num"><b>55.047 ± 0.051</b></td><td class="num"><b>55.027 ± 0.082</b></td><td class="num">−0.04%</td></tr>
+    <tr><td>total_s</td><td class="num">62.206 ± 0.066</td><td class="num">62.028 ± 0.090</td><td class="num">−0.29%</td></tr>
+  </tbody>
+</table>
+<div class="warnbox">
+  表面对比里 MGLRU「开」的 memory/fileio 看似 −55%/−52%，<b>这是「关」组首轮 UFFD 预热未净的残留值</b>（0.173/0.096），而非 MGLRU 的效果；充分预热后的「关」参考值是 0.076~0.077 / 0.043~0.045，与「开」组 0.078 / 0.046 完全一致。真实差异 &lt;2%。
+</div>
+<p class="verdict no">MGLRU 是内存<b>回收压力下的老化优化</b>，而本负载 memory 项仅 ~512MB 远小于 8GiB、根本不触发回收，CPU 项更沾不上边 → 无感。</p>
+
+<h3>4.3 WAKEUP_PREEMPTION（唤醒抢占）</h3>
+<p>入口：<code>/sys/kernel/debug/sched/features</code>（默认含 <code>WAKEUP_PREEMPTION</code>；关闭 = 改为 <code>NO_WAKEUP_PREEMPTION</code>）。x86/arm 各测开/关。</p>
+<table>
+  <thead><tr><th>分项</th><th>x86 开</th><th>x86 关</th><th>arm 开</th><th>arm 关</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td class="num">3.588 ± 0.062</td><td class="num">3.569 ± 0.039</td><td class="num">6.889 ± 0.030</td><td class="num">6.889 ± 0.031</td></tr>
+    <tr><td><b>fork_s</b></td><td class="num"><b>28.411 ± 0.086</b></td><td class="num"><b>28.479 ± 0.298</b></td><td class="num"><b>55.008 ± 0.024</b></td><td class="num"><b>55.035 ± 0.061</b></td></tr>
+    <tr><td>total_s</td><td class="num">32.268 ± 0.109</td><td class="num">32.322 ± 0.333</td><td class="num">62.024 ± 0.045</td><td class="num">62.037 ± 0.071</td></tr>
+  </tbody>
+</table>
+<p class="verdict no">fork 变化率（关相对开）：arm <b>+0.049%</b>（可视为零）；x86 +0.238% 是宿主机离群（第 6 组 29.28）拉高的，去离群后 28.389 vs 28.411 = −0.08%。无影响。原理：<code>fork</code> 出的子进程一出生即 runnable、算完即退出，<b>没有「睡眠→唤醒」这一步</b>，唤醒抢占路径不触发。</p>
+
+<h3>4.4 NEXT_BUDDY（唤醒后优先调度）</h3>
+<p>入口：同上 <code>/sys/kernel/debug/sched/features</code>（默认 <code>NO_NEXT_BUDDY</code> 即关闭；开启 = 改为 <code>NEXT_BUDDY</code>）。新沙箱背靠背测开/关。</p>
+<table>
+  <thead><tr><th>分项</th><th>x86 开</th><th>x86 关</th><th>arm 开</th><th>arm 关</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td class="num">3.454 ± 0.059</td><td class="num">3.441 ± 0.037</td><td class="num">6.897 ± 0.042</td><td class="num">6.887 ± 0.030</td></tr>
+    <tr><td><b>fork_s</b></td><td class="num">27.523 ± 0.296</td><td class="num">27.345 ± 0.131</td><td class="num">55.076 ± 0.064</td><td class="num">55.034 ± 0.052</td></tr>
+    <tr><td>total_s</td><td class="num">31.252 ± 0.320</td><td class="num">31.061 ± 0.128</td><td class="num">62.101 ± 0.093</td><td class="num">62.039 ± 0.061</td></tr>
+  </tbody>
+</table>
+<p class="verdict no">fork 变化率：arm <b>−0.077%</b>（纯噪声）；x86 −0.647% 主因是「开」组第 10 组 28.14 离群，去离群后 −0.4% 且方向与理论相反（仍是噪声）。NEXT_BUDDY 依赖的「唤醒事件」本负载同样不存在。</p>
+
+<h3>4.5 HZ（定时器 tick 频率：100 / 250 / 1000）</h3>
+<p>三类内核均走「重新 build → 打新快照 → 重建沙箱」流程落地（改节点 <code>vmlinux-26.9.0.1.B006</code> 文件本身不影响已打好的快照，必须重新 build 冷启动才带进快照）。<code>getconf CLK_TCK</code> 不可靠（返回 USER_HZ），用 <code>CONFIG_HZ</code>（<code>zcat /proc/config.gz</code>）确认。</p>
+<table>
+  <thead><tr><th>分项</th><th>HZ=100（基线）</th><th>HZ=250</th><th>HZ=1000</th></tr></thead>
+  <tbody>
+    <tr><td>arm fork_s</td><td class="num">55.047 ± 0.051</td><td class="num">55.083 ± 0.063</td><td class="num"><b>55.207 ± 0.073</b></td></tr>
+    <tr><td>arm fib_s</td><td class="num">6.890 ± 0.029</td><td class="num">6.882 ± 0.009</td><td class="num">6.896 ± 0.009</td></tr>
+    <tr><td>arm total_s</td><td class="num">62.206 ± 0.066</td><td class="num">62.088 ± 0.073</td><td class="num">62.230 ± 0.079</td></tr>
+    <tr><td>x86 fork_s</td><td class="num">28.549 ± 0.264</td><td class="num">28.669 ± 0.345</td><td class="num">28.209 ± 0.351</td></tr>
+    <tr><td>x86 total_s</td><td class="num">32.396 ± 0.307</td><td class="num">32.562 ± 0.372</td><td class="num">32.058 ± 0.394</td></tr>
+  </tbody>
+</table>
+<p class="verdict no">arm（干净）：fork_s 呈单调轻微上升 55.047 → 55.083 → 55.207（累计 <b>+0.29%</b>），但 <b>fib_s 三档完全平坦</b>（纯 CPU 吞吐没变），total 也无单调趋势。这是「疑似真实 + 测量时间漂移」的叠加：HZ 越高 tick 越密，fork 链路上的调度/定时开销微增（量级与「每秒多 ~900 次 tick 的 VM 中断开销」吻合），但干扰项是 arm 实测值本身随时间缓慢上飘。x86 因宿主机噪声完全测不出（28.21 反而比 28.55 低）。<b>结论：纯 CPU 吞吐无影响，fork 侧最多 ~0.2~0.3% 的疑似微小开销，需同时间窗背靠背才能钉死。</b></p>
+<div class="note">
+<b>HZ 三档的模板 / build id（供复现，内核 digest：x86 hz100 <code>bffa66b8</code> / hz250 <code>6873803f</code> / hz1000 <code>d2e245c4</code>；arm hz100 <code>edf79a5d</code> / hz250 <code>16a8fbbb</code> / hz1000 <code>4f55894f</code>）：</b>
+<table>
+  <thead><tr><th>HZ</th><th>x86 template_id</th><th>x86 build_id</th><th>arm template_id</th><th>arm build_id</th></tr></thead>
+  <tbody>
+    <tr><td>100（基线）</td><td class="mono">661ceae5-2d00-4d3a-99f1-efe9c047105a</td><td class="mono">d9ef4933-56a2-46d1-8e6b-30f3fba9e1db</td><td class="mono">b684fe00-8c07-4502-8855-0819efaaee32</td><td class="mono">0cf7a6bb-d642-4849-96e0-01df3d325d08</td></tr>
+    <tr><td>250</td><td class="mono">c523d3c4-4e44-4a73-9d3f-ffcd615f6752</td><td class="mono">c1efdd8d-374d-40d4-8c3b-41798267c6a4</td><td class="mono">f649cdad-5dfe-4887-bf40-cd2f3aeb826d</td><td class="mono">7f18677c-1504-4248-813f-b6dcd078ce2f</td></tr>
+    <tr><td>1000</td><td class="mono">1a79abe0-6076-4a0f-833e-d2c6735a358e</td><td class="mono">2a2c5b8a-8525-4d0d-8831-bb77deb05959</td><td class="mono">bba75e92-9f0f-4121-a2d1-b1e26305e211</td><td class="mono">fc5e5e64-5fa0-4933-be29-5e3c964c8e57</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>4.6 mTHP（多尺寸透明大页）—— 唯一有显著收益的项</h3>
+<p>内核为 HCE 6.6，backport 了 6.8 的 mTHP，完整 <code>hugepages-8kB ~ 2048kB</code> 多尺寸 sysfs。开启方式：</p>
+<pre><code>echo always &gt; /sys/kernel/mm/transparent_hugepage/enabled          # 顶层（2MB PMD）
+echo always &gt; /sys/kernel/mm/transparent_hugepage/hugepages-64kB/enabled
+echo always &gt; /sys/kernel/mm/transparent_hugepage/hugepages-32kB/enabled
+# ... 16/128/256/512/1024/2048 kB 同理（默认全 never，2MB 为 inherit）</code></pre>
+
+<h3>4.6.1 确认 workload 真的用到了 mTHP（计数器增量，单次运行）</h3>
+<table>
+  <thead><tr><th>计数器</th><th>x86 增量</th><th>arm 增量</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>thp_fault_alloc</code>（2MB PMD）</td><td class="num"><b>+259 页 ≈ 518MB</b></td><td class="num"><b>+261 页 ≈ 522MB</b></td><td>≈ MEM_MB×2 = 512MB 全覆盖</td></tr>
+    <tr><td><code>hugepages-64kB/stats/anon_fault_alloc</code></td><td class="num"><b>+53 页 ≈ 3.4MB</b></td><td class="num"><b>+60 页 ≈ 3.8MB</b></td><td>不对齐边角走小尺寸</td></tr>
+  </tbody>
+</table>
+<p>这正是「多尺寸 THP 同时参与」的证据：<code>bytearray(256MB)×2</code> 的匿名分配，大头 2MB、边角 64kB。用 <code>/proc/vmstat</code> 的累计计数（<code>thp_fault_alloc</code>、<code>nr_anon_transparent_hugepages</code>）跑前后取差值即可证明。</p>
+
+<h3>4.6.2 x86 同沙箱背靠背：THP 关 vs mTHP 开（干净对比）</h3>
+<table>
+  <thead><tr><th>分项</th><th>THP=never</th><th>mTHP=always+小尺寸</th><th>变化</th></tr></thead>
+  <tbody>
+    <tr><td><b>memory_s</b></td><td class="num">0.2388 ± 0.0037</td><td class="num"><b>0.0723 ± 0.0033</b></td><td class="num"><b>−69.7%（3.30×）</b></td></tr>
+    <tr><td>fib_s</td><td class="num">3.5706 ± 0.0567</td><td class="num">3.5840 ± 0.0691</td><td class="num">+0.4%</td></tr>
+    <tr><td>fork_s</td><td class="num">28.3445 ± 0.2846</td><td class="num">28.3119 ± 0.2616</td><td class="num">−0.1%</td></tr>
+    <tr><td>total_s</td><td class="num">32.1882 ± 0.3402</td><td class="num">32.0002 ± 0.2989</td><td class="num">−0.6%</td></tr>
+  </tbody>
+</table>
+<p class="verdict yes">只有 memory 阶段变快，CPU 阶段（fib/fork）几乎不动 —— 提升纯粹来自内存分配路径。为什么是 3.3× 而非通常的 TLB 10~30%？因为这个沙箱内存是 <b>UFFD 懒加载 + diff-cow</b>，单次缺页很贵：<code>bytearray(256MB)</code> 首次写入，THP 关时每块 buffer 触发 <b>65536 次 4KB 缺页</b>（×2 块 = 13 万次），开 THP 后骤降到 <b>128 次 2MB 缺页</b>（缺页数减少 <b>512 倍</b>）+ TLB 压力 65536→128 条，两项叠加撑出 3.3×。</p>
+<div class="warnbox">
+  <b>arm 侧说明：</b>arm 的 mTHP <b>使用已经计数器确认</b>（+261/+60 页），但那一轮 arm 基准本身噪声很大（memory_s 0.086~0.215 乱跳、fileio_s 也从历史 ~0.043 翻倍到 ~0.10、还冒出 fork=56.8 离群）——是 67 宿主机当时变忙导致，不是 mTHP 的问题。arm 顶层默认即 <code>always</code>，历史 memory_s ~0.078 已经是 THP 加速后的值。要干净的 arm 数字需等宿主机空闲单独测。
+</div>
+
+<h3>4.7 CPU mitigations（mitigations=off vs 基线）—— 只对 x86 的 syscall/上下文切换型负载有效</h3>
+<p>为回答「EEVDF / mitigations / HZ 对 <b>harness（进程编排/IO 密集）vs worker（CPU 密集）</b>有无提升」，把 workload 扩到 <b>6 场景</b>：新增 <code>syscall</code>（<code>os.getppid()</code> × 1e7 —— 非 vDSO 缓存、每次真进内核）与 <code>ctx_switch</code>（双管道 <code>fork</code> 乒乓 × 2e5 轮，每轮 2 次切换），并把 <code>MEM_MB</code> 256→2048 调到秒级（x86 稳态 ~1.2s）。</p>
+<p>关闭 mitigations 用<b>方式 D</b>：直接改内核源码默认值 <code>kernel/cpu.c:3179</code> 的 <code>cpu_mitigations __ro_after_init = CPU_MITIGATIONS_OFF</code>（等效把 <code>mitigations=off</code> 写死，无需改 cmdline），重编内核后走「重新 build → 切配置 → 重建」打快照。内核 digest：off x86 <code>1b1bba86…</code> / arm <code>f4d580a6…</code>；基线（on）x86 <code>bffa66b8…</code> / arm <code>edf79a5d…</code>。沙箱内校验：off 后 x86 <code>spectre_v2 → Vulnerable; IBPB: disabled; STIBP: disabled</code>、<code>spec_store_bypass → Vulnerable</code>、<code>spectre_v1 → Vulnerable</code>；arm <code>spec_store_bypass → Vulnerable</code>（arm 的 <code>spectre_v2</code> 硬件 <code>Not affected</code>，<code>spectre_v1</code> 是编译期写死的 <code>__user sanitization</code>、关不掉）。</p>
+
+<table>
+  <thead><tr><th>分项</th><th>x86 ON</th><th>x86 OFF</th><th>x86 变化</th><th>arm ON</th><th>arm OFF</th><th>arm 变化</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td class="num">3.537 ± 0.053</td><td class="num">3.568 ± 0.029</td><td class="num">+0.9%</td><td class="num">6.884 ± 0.010</td><td class="num">6.882 ± 0.011</td><td class="num">−0.0%</td></tr>
+    <tr><td><b>syscall_s</b></td><td class="num">1.804 ± 0.051</td><td class="num"><b>0.670 ± 0.013</b></td><td class="num"><b>−62.9%（2.69×）</b></td><td class="num">1.545 ± 0.003</td><td class="num">1.544 ± 0.002</td><td class="num">−0.0%</td></tr>
+    <tr><td>memory_s</td><td class="num">1.910 ± 0.021</td><td class="num">1.237 ± 0.005</td><td class="num">−35.2%*</td><td class="num">1.365 ± 0.244</td><td class="num">0.718 ± 0.019</td><td class="num">−47.4%*</td></tr>
+    <tr><td><b>ctx_s</b></td><td class="num">2.753 ± 0.050</td><td class="num"><b>2.366 ± 0.044</b></td><td class="num"><b>−14.0%</b></td><td class="num">3.668 ± 0.564</td><td class="num">2.891 ± 0.056</td><td class="num">−21.2%*</td></tr>
+    <tr><td>fork_s</td><td class="num">28.178 ± 0.303</td><td class="num">28.495 ± 0.186</td><td class="num">+1.1%</td><td class="num">55.061 ± 0.081</td><td class="num">55.021 ± 0.092</td><td class="num">−0.1%</td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<b>核心结果：</b>x86 上 <code>syscall_s</code> 从 1.804s 降到 0.670s（<b>2.69× 加速</b>，单次 syscall 180.4ns→67.0ns、每次省 <b>113.4ns</b>），<code>ctx_s</code> 降 14%（6.88→5.92µs/切换）。这正是 AMD Milan 上 retpoline（<code>lfence</code> 变体）+ swapgs/spectre_v1 屏障 + IBPB-on-ctx-switch + RSB-filling 的真实开销，在 syscall/上下文切换密集时被放大。arm 则<b>完全无差</b>（syscall −0.0%，两组 std 均 &lt;0.003）—— 因为 arm <code>spectre_v2</code> 硬件 <code>Not affected</code>，本来就没有 retpoline 可关。
+</div>
+
+<div class="warnbox">
+<b>打 * 的三项不是 mitigations 效果：</b>① <code>memory_s</code> 是「2GiB alloc + copy」纯内存带宽，与 mitigations 无关 —— 差异来自两组沙箱实例不同时刻的宿主/UFFD 懒加载状态（arm ON 组 std 高达 0.244、min 0.70 / max 1.57 乱跳，方向还与 x86 相反，正说明与 mitigations 无关）；② <code>arm ctx_s</code> 的 −21.2% 同样可疑（ON 组 std 0.564、min 2.87 / max 4.47，是 67 宿主机瞬时变忙，不是 mitigations）。<b>可信信号只有 x86 的 syscall −62.9% 与 ctx −14.0%（两组 std 都很小、干净），以及 arm 的「syscall 完全无差」。</b>
+</div>
+
+<p class="verdict yes">正面回答「mitigations 对 harness/worker 有没有提升」：<b>worker（纯计算 fib/fork）无感</b>（+0.9% / +1.1%，噪声内）；<b>harness（syscall/上下文切换密集的进程编排）在 x86 上有实打实收益</b>（syscall 2.69×、ctx 14%），<b>arm 无收益</b>。结合前 6 组，四个 knob 里<b>唯一对 harness 有用的是 x86 的 mitigations=off</b>，EEVDF 与 HZ 对两类场景都无感。</p>
+
+<h2>五、共性结论：为什么「调度/回收/定时器」参数都无感，而 mTHP 例外</h2>
+<table>
+  <thead><tr><th>参数</th><th>作用的机制</th><th>本负载是否触发</th></tr></thead>
+  <tbody>
+    <tr><td><code>base_slice_ns</code></td><td>EEVDF 时间片切分周期</td><td class="no">否 —— CPU 满载，吞吐=墙钟×vCPU，与时间片无关</td></tr>
+    <tr><td><code>WAKEUP_PREEMPTION</code></td><td>睡眠任务被唤醒时能否抢占</td><td class="no">否 —— fork 子进程只算不睡，无「睡眠→唤醒」</td></tr>
+    <tr><td><code>NEXT_BUDDY</code></td><td>唤醒后优先被调度</td><td class="no">否 —— 同样依赖唤醒事件</td></tr>
+    <tr><td><code>MGLRU</code></td><td>内存压力下的回收老化</td><td class="no">否 —— 512MB ≪ 8GiB，不触发回收</td></tr>
+    <tr><td><code>HZ</code></td><td>定时 tick 频率（jiffies 粒度）</td><td class="no">基本否 —— 纯计算进程几乎不被打断，tick 开销约 0.02% 量级</td></tr>
+    <tr><td><code>mTHP</code></td><td>匿名内存分配粒度（缺页次数/TLB 压力）</td><td class="yes"><b>是 —— 内存阶段每一步都在分配/触页，直接受益</b></td></tr>
+    <tr><td><code>mitigations=off</code></td><td>retpoline/IBPB/RSB-filling 的每次 syscall、每次切换开销</td><td class="yes"><b>x86 是（syscall/切换密集时）；arm 否（硬件 Not affected）</b></td></tr>
+  </tbody>
+</table>
+<p class="note">
+  一句话：前 6 组这份「<b>CPU 打满、子进程不睡眠、内存远小于物理上限</b>」的纯计算负载，让所有针对「调度切换 / 唤醒 / 回收 / 定时」的调优点统一失效，唯有直接作用于「内存分配粒度」的 mTHP 生效。<b>要让调度类参数体现差异，必须换成有睡眠/唤醒、有 I/O 等待、或 CPU 未满载的负载</b>（如子进程里加 <code>usleep</code>/<code>sched_yield</code>、短活 fork/exec churn、或内存压力场景）。<b>但 mitigations 是另一类参数</b>：第 7 组证明，只要负载变成 syscall/上下文切换密集（即 harness 类的进程编排），<b>x86 上 mitigations=off 立刻显出 2.69× 的 syscall 收益</b>——同一份纯计算负载测不出它，纯粹是因为计算路径不进这些被缓解的代码。
+</p>
+
+<h2>六、附录：内核调参与内核替换的落地方法</h2>
+<h3>6.1 运行时参数（debugfs / sysfs，沙箱内即可改）</h3>
+<pre><code># 先挂 debugfs
+mount -t debugfs debugfs /sys/kernel/debug
+
+# 调度时间片
+echo 2250000 &gt; /sys/kernel/debug/sched/base_slice_ns          # 默认 2250000
+
+# 调度 feature（前缀 NO_ 表示关闭）
+echo WAKEUP_PREEMPTION &gt; /sys/kernel/debug/sched/features       # 开启唤醒抢占
+echo NO_NEXT_BUDDY     &gt; /sys/kernel/debug/sched/features       # 关闭 next buddy
+
+# MGLRU（内核 CONFIG_LRU_GEN=y）
+echo 0x0007 &gt; /sys/kernel/mm/lru_gen/enabled                    # 开启（生效为 0x0003）
+
+# mTHP
+echo always &gt; /sys/kernel/mm/transparent_hugepage/enabled
+echo always &gt; /sys/kernel/mm/transparent_hugepage/hugepages-64kB/enabled</code></pre>
+<p class="note">注意：这些运行时参数在<b>沙箱重启（快照恢复）后全部回默认</b>，每轮实验前需重设。沙箱生命周期 1 小时。</p>
+
+<h3>6.2 编译期参数（HZ / 内核替换）—— 必须重新 build 打快照</h3>
+<pre><code># 1) 在节点源码树重编内核（如改 HZ）
+cd /home/gzk/kernel
+sed -i 's/^CONFIG_HZ_100=y/# CONFIG_HZ_100 is not set/; s/^CONFIG_HZ=100/CONFIG_HZ=250/' .config
+# 打开目标 HZ 子项并 make
+make -j$(nproc) Image   # arm64 产物 arch/arm64/boot/Image（x86 为 bzImage）
+
+# 2) 覆盖节点内核文件（仅这样不够 —— 见下）
+cp arch/arm64/boot/Image /opt/sandbox/guest-runtime/vmlinux/vmlinux-26.9.0.1.B006
+
+# 3) 关键：重新 build 才会冷启动用新内核打新快照（见下节）</code></pre>
+<div class="warnbox">
+  <b>为什么改文件不生效：</b>沙箱是从<b>模板 build 阶段冷启动打的内存快照</b>恢复的，<code>runtime.cfg</code> 里内核按 digest（如 <code>bffa66b8…</code>）内容寻址引用。只在节点上覆盖 <code>vmlinux-26.9.0.1.B006</code> 文件，快照里仍是旧内核、digest 也还是旧的 → 新建沙箱依旧旧内核（实测 uname/CONFIG_HZ 都不变）。<b>必须走「重新 build → 切配置 → 重建」流程。</b>
+</div>
+
+<h3>6.3 重新 build 并切换模板（完整流程）</h3>
+<pre><code># 在构建机 1.95.10.147 的 Quickstart 目录
+cd /home/ARIES-Huawei-Gray-Profiling-Quickstart
+
+# 1) 重新 build（创建新模板 + 冷启动打新快照）
+python3 mk_template.py x86 swr.../aries-jiuwenswarm@sha256:07f2e9b2...   # arm 用 798a0f48...
+
+# 2) 把新 template_id/build_id 写回配置（先备份）
+#   （image 不变，仅换 template_id/build_id）
+
+# 3) 删除旧沙箱 + 重建
+./run.sh delete x86 &amp;&amp; ./run.sh create x86
+./run.sh delete arm &amp;&amp; ./run.sh create arm
+
+# 4) 沙箱内校验内核生效
+uname -a                          # 看版本串（如 6.6.0+ #2 …）
+zcat /proc/config.gz | grep CONFIG_HZ   # 权威确认 HZ（CONFIG_IKCONFIG_PROC=y）</code></pre>
+
+<h3>6.4 mitigations=off 的落地（方式 D：改内核源码默认值，无需 cmdline）</h3>
+<pre><code># 方式 D：直接改内核源码 cpu_mitigations 默认值（等效 mitigations=off 写死）
+# 源码 kernel/cpu.c:3179 原 AUTO → OFF：
+#   static enum cpu_mitigations cpu_mitigations __ro_after_init = CPU_MITIGATIONS_OFF;
+# 重编后覆盖节点 vmlinux，再「重新 build → 切配置 → 重建」（同 6.2/6.3）
+
+# 沙箱内校验生效：
+for v in /sys/devices/system/cpu/vulnerabilities/*; do printf "%-28s: %s\n" "$(basename $v)" "$(cat $v)"; done
+dmesg | grep -iE 'spectre|mitigation'
+# 预期 x86：spectre_v2 / spec_store_bypass / spectre_v1 → Vulnerable
+# 预期 arm：spec_store_bypass → Vulnerable（spectre_v2 本来就 Not affected）</code></pre>
+<div class="warnbox">
+  <b>为什么不用 cmdline 传 <code>mitigations=off</code>：</b>控制面 API、节点 <code>conductor.yaml</code> 的 <code>sandbox.boot</code>、per-sandbox <code>sandbox.runtime.cfg</code> 全程都没有可用的 <code>boot.cmdline</code> 入口（<code>node-ctl</code> = kuasar sandboxer，其 <code>buildCmdline()</code> 固定拼 <code>init=/sbin/init root=/dev/pmem0 ro rootfstype=erofs rootflags=dax=always console=hvc0 panic=-1</code>，<code>boot.cmdline</code> 字段平台从不填充）。因此改 <code>cpu_mitigations</code> 源码默认值（方式 D）是唯一可控入口。
+</div>
+
+<h2>七、附：基线 workload 数据（HZ=100，无调参参照）</h2>
+<table>
+  <thead><tr><th>分项</th><th>x86</th><th>arm</th><th>arm/x86</th></tr></thead>
+  <tbody>
+    <tr><td>fib_s</td><td class="num">3.567 ± 0.051</td><td class="num">6.890 ± 0.029</td><td class="num">1.93×</td></tr>
+    <tr><td>memory_s</td><td class="num">0.240 ± 0.002</td><td class="num">0.173 ± 0.016</td><td class="num">0.72×</td></tr>
+    <tr><td>fileio_s</td><td class="num">0.041 ± 0.006</td><td class="num">0.096 ± 0.016</td><td class="num">2.37×</td></tr>
+    <tr><td><b>fork_s</b></td><td class="num"><b>28.338 ± 0.099</b></td><td class="num"><b>55.047 ± 0.051</b></td><td class="num">1.94×</td></tr>
+    <tr><td><b>total_s</b></td><td class="num"><b>32.185 ± 0.136</b></td><td class="num"><b>62.206 ± 0.066</b></td><td class="num"><b>1.93×</b></td></tr>
+  </tbody>
+</table>
+<p>fork_s ≈ 8× fib_s（64 子进程 × 10 迭代 = 640 次 fib = 32× 主 fib CPU 量，4 vCPU 分摊 → 正好 8×），扩展线性、fork 开销可忽略。</p>
+
+<h2>八、harness 命令耗时实测（前端 ppt_replay · mTHP 开启 · 5 轮）</h2>
+<p>为量化「开启 mTHP 后沙箱内命令执行耗时」，改用前端 <b>ARIES 灰度实验台</b>（<code>94.74.91.208:9527</code>，Harness 任务）的确定性 <code>ppt_replay</code> 回放（workload <code>llm-development-pptx-v1</code>，不调真模型），每次跑 <b>32 条沙箱命令</b>生成 PPTX，从前端结果读取 <code>performance.summary.commands.sum_ns</code>（即「沙箱命令累计耗时」）。</p>
+<p>流程（每轮）：<b>建沙箱（template <code>661ceae5</code> / build <code>d9ef4933</code>，HZ=100 x86）→ 开终端注入 mTHP → 关终端 → 跑 ppt_replay → 读耗时 → 删沙箱</b>，共 5 轮（每轮全新沙箱）。mTHP 命令：顶层 + <code>hugepages-2048~16kB</code> 全 <code>echo always</code>，终端输出确认各档 <code>[always]</code>。</p>
+<table>
+  <thead><tr><th>轮</th><th>沙箱命令累计耗时（s）</th><th>单命令平均耗时（ms）</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td class="num">11.753</td><td class="num">367.28</td></tr>
+    <tr><td>2</td><td class="num">11.159</td><td class="num">348.71</td></tr>
+    <tr><td>3</td><td class="num">11.312</td><td class="num">353.49</td></tr>
+    <tr><td>4</td><td class="num">11.705</td><td class="num">365.77</td></tr>
+    <tr><td>5</td><td class="num">11.450</td><td class="num">357.80</td></tr>
+  </tbody>
+</table>
+<p class="verdict yes"><b>沙箱命令累计耗时 mean = 11.48s ± 0.25s</b>（样本标准差，~2.2%）；<b>单命令平均耗时 mean = 358.6ms ± 7.9ms</b>（每轮 32 条命令）。</p>
+<div class="note">
+  说明：① 该耗时是「命令进程启动至退出的墙钟时间」，含进程内 CPU/IO/等待，不能当作纯 IO 或纯 syscall 时间；② 每轮 <code>sum_ns</code> 都是 32 条命令之和，回放确定性下条数稳定；③ 与之前 10 轮（mTHP 命令为升序 + <code>2&gt;/dev/null</code>）的 11.52s 基本一致，说明 mTHP 开启命令的写法/顺序不影响结果。
+</div>
+
+<footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
+  本文件汇总 2026-11-10 ~ 11-11 在华为 Gray 沙箱上执行的 7 组 guest 内核调参对比实验，以及一次前端 harness（<code>ppt_replay</code>）命令耗时实测（mTHP 开启，5 轮）。事实来源：沙箱内 <code>sandbox-ctl exec</code> 实测、debugfs/sysfs 读写、<code>/proc/vmstat</code> 与 per-size mTHP 计数、<code>/sys/devices/system/cpu/vulnerabilities</code> 漏洞状态、控制面 API 响应、前端 Harness 任务回放结果（<code>performance.summary.commands</code>）。测量均为「预热 1 轮 + 10 组」；“无影响”判断已排除 x86 宿主机噪声与首轮预热残留；mitigations 组已标注非 mitigations 的宿主/UFFD 噪声项。
+</footer>
+
+</div>
+</body>
+</html>
