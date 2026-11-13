@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>华为 Gray 沙箱 · 宿主机(Host OS)优化项分析</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #273449;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --code: #0b1220;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.65; padding-bottom: 80px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px; }
+  header { padding: 28px 0 22px; border-bottom: 1px solid #334155; margin-bottom: 26px; }
+  h1 { font-size: 26px; margin: 0 0 8px; color: #f8fafc; }
+  .sub { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 19px; margin: 44px 0 14px; color: #f1f5f9; border-left: 4px solid var(--accent); padding-left: 12px; }
+  h3 { font-size: 15px; margin: 26px 0 8px; color: #cbd5e1; }
+  p { margin: 10px 0; }
+  code, .c {
+    font-family: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 13px; background: var(--code); padding: 1px 6px; border-radius: 4px;
+    color: #7dd3fc; white-space: pre-wrap; word-break: break-all;
+  }
+  pre {
+    background: var(--code); border: 1px solid #334155; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; color: #dbeafe; display: block; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #334155; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #f1f5f9; font-weight: 600; }
+  tr:nth-child(even) td { background: #162032; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .pill.ok { background: rgba(52,211,153,.15); color: var(--ok); }
+  .pill.warn { background: rgba(251,191,36,.15); color: var(--warn); }
+  .pill.bad { background: rgba(248,113,113,.15); color: var(--bad); }
+  .pill.none { background: rgba(148,163,184,.15); color: var(--muted); }
+  .note {
+    background: rgba(56,189,248,.08); border: 1px solid rgba(56,189,248,.25);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .warnbox {
+    background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.3);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .okbox {
+    background: rgba(52,211,153,.08); border: 1px solid rgba(52,211,153,.3);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px;
+  }
+  .mono { font-family: "SF Mono", Consolas, monospace; }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li { margin: 4px 0; }
+  .num { font-variant-numeric: tabular-nums; }
+  .item {
+    border: 1px solid #334155; border-radius: 10px; padding: 14px 18px; margin: 16px 0;
+    background: var(--panel);
+  }
+  .item h3 { margin: 0 0 6px; }
+  .kvline { color: var(--muted); font-size: 13px; margin: 4px 0; }
+  .kvline b { color: #cbd5e1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>华为 Gray 沙箱 · 宿主机(Host OS)优化项分析</h1>
+  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优</div>
+</header>
+
+<h2>一、一句话结论</h2>
+<p>两台宿主机 CPU 富余（内存空闲 1.4TiB / 1.0TiB）、<code>THP=always</code> 与 <code>mitigations=off</code> 均已到位；<b>真正的短板是「无 NUMA 绑核绑内存 + 无隔离核（<code>isolcpus</code>/<code>nohz_full</code>）+ <code>halt_poll_ns</code> 收缩被关闭」</b>。其中<b> NUMA 绑核绑内存</b>最可能直接消掉此前 arm harness 逐轮 std 高达 3.5~4.3% 的「宿主漂移」。</p>
+<p class="note"><b>性价比排序：</b>① NUMA 绑核绑内存（消方差）&gt; ② <code>halt_poll_ns</code>（提延迟、代价≈0）&gt; ③ <code>tdp_mmu=Y</code>（EPT 缺页）&gt; ④ <code>isolcpus</code>/<code>nohz_full</code>（去 jitter）&gt; ⑤ AVIC（收益可能大但兼容性风险高）。<b>cluster 调度域（CLS）已评估：arm 存在该级、x86 基本无；对 4 vCPU 单流 harness 属二阶微调，低杠杆，不纳入。</b></p>
+
+<h2>二、宿主机实测概况</h2>
+<table>
+  <thead><tr><th>维度</th><th>x86（139）</th><th>arm（67）</th></tr></thead>
+  <tbody>
+    <tr><td>CPU</td><td>AMD EPYC 9T25 · 128C×2S×2T = <b>512</b> 逻辑核</td><td>鲲鹏 920 7280Z · 80C×2S = <b>160</b> 核（无 SMT）</td></tr>
+    <tr><td>NUMA</td><td>2 节点，跨节点距离 32</td><td>4 节点，跨节点距离 35~40</td></tr>
+    <tr><td>内存</td><td>1.5 TiB，无 swap</td><td>1.0 TiB，无 swap</td></tr>
+    <tr><td>cpufreq</td><td>performance</td><td>performance</td></tr>
+    <tr><td>cpuidle</td><td>acpi_idle / menu</td><td>none（无驱动，常活跃）</td></tr>
+    <tr><td>THP</td><td class="mono">[always]</td><td class="mono">[always]</td></tr>
+    <tr><td>调度器</td><td class="mono">EEVDF（6.6.0-72，CFS 已替换）</td><td class="mono">EEVDF（6.6.0-72，CFS 已替换）</td></tr>
+    <tr><td>宿主 HZ</td><td class="mono">1000（1ms tick）</td><td class="mono">250（4ms tick）</td></tr>
+    <tr><td>clocksource</td><td class="mono">tsc</td><td class="mono">arch_sys_counter</td></tr>
+    <tr><td>irqbalance</td><td colspan="2">active（默认 IRQ 亲和 = 全核）</td></tr>
+    <tr><td>cmdline 关键</td><td class="mono">nohz=off mitigations=off nmi_watchdog=1</td><td class="mono">nohz=off nospectre_bhb iommu.passthrough=1 kvm.force_wfi_trap=1</td></tr>
+    <tr><td>沙箱规格</td><td colspan="2">4 vCPU / 8GB（conductor memory 8GiB capacity/allocatable）</td></tr>
+    <tr><td>runner cpuset</td><td class="mono">cpuset.cpus=8-511，cpuset.mems=空</td><td class="mono">cpuset.cpus=8-143，cpuset.mems=空</td></tr>
+  </tbody>
+</table>
+
+<h2>三、可优化项详细分析</h2>
+
+<div class="item">
+<h3>1. vCPU / 内存未按 NUMA 绑核绑内存 <span class="pill bad">高</span></h3>
+<p class="kvline"><b>当前值：</b><code class="mono">cpuset.cpus = 8-511</code>（x86）/ <code class="mono">8-143</code>（arm），<code class="mono">cpuset.mems</code> 为空 → 内存可落任意远端节点。</p>
+<p><b>含义：</b>沙箱的 4 个 vCPU 线程与 8GB 内存在 2~4 个 NUMA 节点间自由漂移；内存没有绑定，可被分配到任意远端 NUMA 节点。</p>
+<p><b>作用：</b>4 核 guest 在 NUMA 距离 32（x86）/ 40（arm）的节点间跳来跳去，导致 ① 远端内存访问延迟 2~3×；② vCPU 迁移丢失 cache/TLB；③ 调度抖动。这<b>正是此前 arm harness 逐轮 std 高达 3.5~4.3%「宿主漂移」的头号嫌疑</b>。</p>
+<p><b>优化方向：</b>每个沙箱的 <code>cpuset.cpus</code> 固定到<b>单节点内的一段核</b>、<code>cpuset.mems</code> 绑定<b>同一节点</b>；或 cloud-hypervisor 启动用 <code>--cpus</code> 配合 <code>numactl --membind</code>。</p>
+<p class="kvline"><b>预期/风险：</b>显著压方差，mean 或小幅下降；需改 conductor 的 cpuset 分配逻辑，属于工程改造。</p>
+</div>
+
+<div class="item">
+<h3>2. halt_poll_ns 收缩关闭（只增不减） <span class="pill bad">高</span></h3>
+<p class="kvline"><b>当前值：</b>x86 <code class="mono">200000</code>（200us）/ arm <code class="mono">500000</code>（500us）；<code class="mono">halt_poll_ns_grow=2</code>、<code class="mono">grow_start=10000</code>、<code class="mono">shrink=0</code>。</p>
+<p><b>含义：</b>vCPU 执行 HLT/WFI 后，VMM 先忙等 <code>halt_poll_ns</code> 时间再真正让出 CPU，用空转换取「短 idle 后立即唤醒」的低延迟。</p>
+<p><b>作用：</b>harness 的 32 条短命令、npm 的 node 子进程、workload 的 fork 64 子进程，都是<b>短 idle-wakeup 密集</b>；halt_poll 能省掉「睡眠→唤醒」的调度/中断往返。当前 <code>shrink=0</code> 意味着忙等窗口只增不减，无法自适应回落。</p>
+<p><b>优化方向：</b>宿主 CPU 几乎全空（空闲 1.4TiB/1.0TiB），空转代价≈0。x86 可试提到 300~500us，arm 已较激进；并打开 <code>shrink</code> 让其自适应。</p>
+<p class="kvline"><b>预期/风险：</b>「延迟换宿主空转」，此环境下性价比高；风险低，可在线验证。</p>
+</div>
+
+<div class="item">
+<h3>3. 无 isolcpus / nohz_full（tick 抖动，x86 尤甚） <span class="pill warn">中</span></h3>
+<p class="kvline"><b>当前值：</b>cmdline <code class="mono">nohz=off</code>（明确关掉动态 tick），无 <code class="mono">isolcpus</code>/<code class="mono">nohz_full</code>/<code class="mono">rcu_nocbs</code>；宿主 <code class="mono">CONFIG_NO_HZ_FULL=y</code> 已编译（仅被 <code class="mono">nohz=off</code> 关掉）。</p>
+<p><b>含义：</b>所有 512/160 个核都按 HZ 被周期 tick 打断，没有为 vCPU 预留「无 tick 隔离核」。x86 宿主 <code class="mono">HZ=1000</code>（1ms tick）、arm <code class="mono">HZ=250</code>（4ms tick），<b>x86 tick 压力是 arm 的 4 倍</b>。</p>
+<p><b>作用：</b>vCPU 跑 guest 时，宿主 tick、RCU 回调、中断会周期性抢占，对短命令密集、fork/exec 密集的负载带来 jitter。</p>
+<p><b>优化方向：</b>划一段专用核做 <code class="mono">isolcpus=... + nohz_full=... + rcu_nocbs=...</code>（去掉 <code class="mono">nohz=off</code>，<b>改 cmdline 即可、不用重编内核</b>），宿主 housekeeping 任务绑到 0-7。</p>
+<p class="kvline"><b>预期/风险：</b>收益中等，但要重构 conductor 的核分配逻辑，工程量大。</p>
+</div>
+
+<div class="item">
+<h3>4. tdp_mmu = N（EPT 缺页走 legacy MMU） <span class="pill warn">中</span></h3>
+<p class="kvline"><b>当前值：</b>x86 <code class="mono">/sys/module/kvm/parameters/tdp_mmu = N</code>。</p>
+<p><b>含义：</b>新一代 TDP MMU 被关闭，KVM 走 legacy MMU 处理 EPT 缺页与 TLB 维护。</p>
+<p><b>作用：</b>memory 阶段 256MB 分配、npm 创建 4318 文件 → 大量 EPT 缺页；legacy MMU 缺页路径慢、多 vCPU 时争用 <code>mmu_lock</code> 扩展性差。</p>
+<p><b>优化方向：</b>评估 <code class="mono">tdp_mmu=Y</code>（上游默认开，较安全）。若当年因某 bug 关掉，值得重新验证。</p>
+<p class="kvline"><b>预期/风险：</b>中等收益、低风险，可在线验证。</p>
+</div>
+
+<div class="item">
+<h3>5. kvm_amd.avic = N（中断注入走 vmexit） <span class="pill warn">中</span></h3>
+<p class="kvline"><b>当前值：</b>x86 <code class="mono">kvm_amd.avic = N</code>、<code class="mono">force_avic = N</code>（同时 <code class="mono">nested=1</code>、<code class="mono">sev=Y</code>）。</p>
+<p><b>含义：</b>AVIC 是 AMD 的硬件虚拟中断加速（guest APIC 由硬件直通），关闭后中断注入需 trap 进 VMM 软件模拟。</p>
+<p><b>作用：</b>fork/exec、soffice、node 均中断/IPI 密集；AVIC 关闭会放大每次 timer/IPI/设备中断的 vmexit 成本。</p>
+<p><b>优化方向：</b>评估 <code class="mono">avic=1</code>。</p>
+<p class="kvline"><b>预期/风险：</b>收益可能大，但 ⚠️ AVIC 与 <code>nested</code>、<code>sev</code> 有兼容性约束（很可能正因此被禁用），必须先验证稳定性；冲突则保持关闭，改从 halt_poll/调度侧补。</p>
+</div>
+
+<div class="item">
+<h3>6. numa_balancing=1 与绑核冲突 <span class="pill none">低</span></h3>
+<p class="kvline"><b>当前值：</b>两节点 <code class="mono">kernel.numa_balancing = 1</code>。</p>
+<p><b>含义：</b>宿主 NUMA 自动平衡开着，会周期性扫描并迁移「放错节点」的页。</p>
+<p><b>优化方向：</b>做了绑核落地后置 <code class="mono">kernel.numa_balancing=0</code>，避免自动平衡来回迁 guest 页制造 churn。</p>
+</div>
+
+<div class="item">
+<h3>7. arm twed_enable = N（WFE 不 trap） <span class="pill none">低</span></h3>
+<p class="kvline"><b>当前值：</b>arm <code class="mono">twed_enable = N</code>、<code class="mono">twedel = 0</code>。</p>
+<p><b>含义：</b>TWED(Trap WFE Delay)控制 guest 执行 WFE 自旋时是否 trap 进 VMM 并延迟。</p>
+<p><b>作用：</b>不 trap → guest 自旋耗宿主核但零延迟；trap+delay → 省核但有延迟。</p>
+<p><b>优化方向：</b>宿主 CPU 富余，默认保持；仅当观测到 guest WFE 空转明显才考虑开 + 小 <code>twedel</code>。</p>
+</div>
+
+<div class="item">
+<h3>8. guest 内存用 1GB 大页（进阶，x86） <span class="pill none">低</span></h3>
+<p class="kvline"><b>当前值：</b>THP 已 <code class="mono">[always]</code>（2MB）；静态大页未预留（<code class="mono">HugePages_Total=0</code>）；x86 支持 <code class="mono">pdpe1gb</code>。</p>
+<p><b>含义：</b>2MB 大页已降低 EPT 页表层级；1GB 大页可再降一级。</p>
+<p><b>优化方向：</b>给 guest 内存用 1GB hugetlbfs（需改 cloud-hypervisor 内存后端）。收益有限，优先级低。</p>
+</div>
+
+<div class="item">
+<h3>9. C-state 深度 <span class="pill none">低</span></h3>
+<p class="kvline"><b>当前值：</b>x86 <code class="mono">acpi_idle</code> + <code class="mono">menu</code>；arm <code class="mono">cpuidle = none</code>（已常活跃）。</p>
+<p><b>含义/作用：</b>深 C-state 增加 vCPU 突发唤醒延迟；arm 无 cpuidle 驱动已是天然低延迟。</p>
+<p><b>优化方向：</b>x86 可试 <code class="mono">processor.max_cstate=1</code>；有 halt_poll 后收益被部分掩盖。</p>
+</div>
+
+<div class="item">
+<h3>10. cluster 调度（共享 L2 调度域） <span class="pill none">低·不纳入</span></h3>
+<p class="kvline"><b>概念：</b>调度域层级 <code class="mono">SMT → MC → CLUSTER → DIE → PKG → NUMA</code> 中的 CLUSTER（CLS）级（<code class="mono">CONFIG_SCHED_CLUSTER</code>），专门建模「一小组核共享同一块 L2」，用于「唤醒放置」时在「同 cluster 缓存亲和」与「跨 cluster 摊薄 L2 容量」之间取舍；源自 ARM DynamIQ/DSU 与 x86 混合架构（E-core 簇共享 L2）。</p>
+<p><b>现状映射：</b></p>
+<ul>
+  <li><b>arm 鲲鹏 920：</b><code class="mono">CONFIG_SCHED_CLUSTER=y</code> 已编译，<code class="mono">/proc/sys/kernel/sched_cluster</code> 已暴露 → 宿主调度域<b>存在 CLUSTER 级</b>。</li>
+  <li><b>x86 AMD EPYC 9T25：</b><code class="mono">CONFIG_SCHED_CLUSTER_PAIR=m</code>（非标准 CLUSTER），Zen 每核 L2 私有、仅 CCX/CCD 共享 L3，<b>不存在</b>「多核共享 L2」的 cluster → 等价决策发生在 MC/DIE（L3）级。</li>
+</ul>
+<p><b>不纳入原因：</b>harness 是 4 vCPU、fork/exec 密集、唤醒/延迟敏感、单流为主，<b>不是 L2 容量受限</b>；4 vCPU guest 内不出现 CLUSTER 级（guest 侧无从谈起）；「亲和 vs 摊薄」属二阶微调，收益被 ① NUMA 绑核完全盖住。</p>
+<p><b>调度器与相邻旋钮</b>：宿主调度器为 <b>EEVDF</b>（内核 6.6.0-72，CFS 已被替换，叠加 HCE/Euler 扩展）。经典 CFS 旋钮（<code class="mono">sched_latency_ns</code> / <code class="mono">sched_wakeup_granularity_ns</code> / <code class="mono">sched_migration_cost_ns</code>）<b>已不存在</b>（6.6 起被 EEVDF 删除）。实测可用旋钮：debugfs <code class="mono">base_slice_ns=2.8ms</code>、<code class="mono">migration_cost_ns=0.5ms</code>、<code class="mono">nr_migrate=32</code>；sysctl <code class="mono">sched_migration_cost</code>、<code class="mono">sched_protect_slice_timeout_ns</code>、<code class="mono">sched_prio_load_balance_enabled</code>；arm 另有 <code class="mono">sched_cluster</code>（<code class="mono">CONFIG_SCHED_CLUSTER=y</code>）。对 4 vCPU 单流 harness 仍是二阶微调，优先级低。</p>
+</div>
+
+<div class="item">
+<h3>11. irqbalance 全核 IRQ 亲和（IRQ 未从 vCPU 核隔离） <span class="pill none">低</span></h3>
+<p class="kvline"><b>当前值：</b>两节点 <code class="mono">irqbalance = active</code>，<code class="mono">/proc/irq/default_smp_affinity</code> = 全核。</p>
+<p><b>含义：</b>网卡/存储/timer IRQ 可在任意核投递，未被引导离开 vCPU 核。</p>
+<p><b>作用：</b>harness 短命令期间，宿主网卡（冷 npm）/存储/定时器 IRQ 随机抢占 vCPU 核 → 抖动。</p>
+<p><b>优化方向：</b>配合 isolcpus 把 IRQ 亲和从 vCPU 核挪走（<code class="mono">/proc/irq/&lt;n&gt;/smp_affinity_list</code>），或关 irqbalance 改静态绑定；低风险，可在线验证。</p>
+</div>
+
+<h2>四、已最优项（无需动）</h2>
+<table>
+  <thead><tr><th>项</th><th>当前状态</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>mitigations</td><td>x86 <code class="mono">mitigations=off</code> / arm <code class="mono">nospectre_bhb</code></td><td>宿主侧缓解已关，配合 guest 侧 mitigations=off 的 2.69× syscall 收益，一致。</td></tr>
+    <tr><td>cpufreq</td><td>两节点 <code class="mono">performance</code></td><td>已锁最高频，无需再动。</td></tr>
+    <tr><td>THP</td><td>两节点 <code class="mono">[always]</code></td><td>guest 8GB 内存已用 2MB 大页映射。</td></tr>
+    <tr><td>swappiness</td><td><code class="mono">0</code>（无 swap）</td><td>主机不换页，正确。</td></tr>
+    <tr><td>file/pid/线程上限</td><td><code class="mono">fs.file-max / nr_open / pid_max / threads-max</code> 均已调顶</td><td>npm 4318 文件、fork 64 子进程完全够用。</td></tr>
+    <tr><td>存储加速层</td><td>CDC 分块（128KiB~1MiB）+ AES + redis 分层缓存（dragonfly 8GB）+ 本地 FS 回源</td><td>diff-cow 内容寻址存储，配置已合理；热 npm 4318 文件写路径瓶颈更可能在内核虚拟化（EPT）而非存储层。</td></tr>
+  </tbody>
+</table>
+
+<h2>五、落地建议与验证思路</h2>
+<ol>
+  <li><b>先做 NUMA 绑核绑内存</b>（第 1 项）：改动集中在 conductor 的 cpuset 分配，收益目标是把 arm/x86 harness 逐轮方差压下来。</li>
+  <li><b>再调 halt_poll_ns + tdp_mmu</b>（第 2、4 项）：低风险、可在线改，改完用同一套 ppt_replay harness（读 <code>sum_ns</code>）与 npm 热装做 A/B 对照，量化 vmexit/唤醒路径收益。</li>
+  <li><b>AVIC（第 5 项）单独灰度</b>：因兼容性风险，先在一台验证节点开 <code class="mono">avic=1</code> 跑稳定性 + 基准，再决定是否推广。</li>
+  <li><b>isolcpus/nohz_full（第 3 项）作为中期改造</b>：与绑核一起做，才能兑现「去 jitter」的完整收益；宿主 <code class="mono">CONFIG_NO_HZ_FULL=y</code> 已编译，改 cmdline 即可。</li>
+  <li><b>cluster 调度不纳入主路径</b>：已核实 arm <code class="mono">CONFIG_SCHED_CLUSTER=y</code>、x86 <code class="mono">CONFIG_SCHED_CLUSTER_PAIR=m</code>；调度器为 EEVDF，经典 CFS 旋钮已随 6.6 删除（可调 <code class="mono">base_slice_ns</code>/<code class="mono">migration_cost_ns</code> 等），对 4 vCPU 单流 harness 均为低优。</li>
+</ol>
+<p class="note">验证手段复用既有口径：harness 用前端 <code>ppt_replay</code> 的 <code>performance.summary.commands.sum_ns</code>（32 条命令累计耗时）；workload 用 <code>python3 /opt/aries/workload.py</code> 各阶段秒数。宿主侧改动需在节点上操作并注意回滚记录。</p>
+
+<footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
+  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12。
+</footer>
+
+</div>
+</body>
+</html>

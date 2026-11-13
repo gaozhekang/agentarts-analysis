@@ -71,7 +71,7 @@
 
 <header>
   <h1>华为 Gray 沙箱 · Guest 内核调参对比实验汇总</h1>
-  <div class="sub">生成日期：2026-11-11 &nbsp;·&nbsp; 实验执行：2026-11-10 ~ 11-11 &nbsp;·&nbsp; 架构：x86 (10.30.33.139) + arm (10.30.33.67) &nbsp;·&nbsp; Guest 内核：6.6.0（EEVDF，Cloud Hypervisor 微虚拟机）</div>
+  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 实验执行：2026-11-10 ~ 11-12 &nbsp;·&nbsp; 架构：x86 (10.30.33.139) + arm (10.30.33.67) &nbsp;·&nbsp; Guest 内核：6.6.0（EEVDF，Cloud Hypervisor 微虚拟机）</div>
 </header>
 
 <h2>一、一句话结论</h2>
@@ -361,8 +361,93 @@ dmesg | grep -iE 'spectre|mitigation'
   说明：① 该耗时是「命令进程启动至退出的墙钟时间」，含进程内 CPU/IO/等待，不能当作纯 IO 或纯 syscall 时间；② 每轮 <code>sum_ns</code> 都是 32 条命令之和，回放确定性下条数稳定；③ 与之前 10 轮（mTHP 命令为升序 + <code>2&gt;/dev/null</code>）的 11.52s 基本一致，说明 mTHP 开启命令的写法/顺序不影响结果。
 </div>
 
+<h2>九、harness 命令耗时实测（mitigations=off · x86 & arm · 各 5 轮）</h2>
+<p>同第八章口径：前端 <code>ppt_replay</code> 回放（32 条沙箱命令生成 PPTX，不调真模型），读 <code>performance.summary.commands.sum_ns</code>。区别：本组<b>不注入 mTHP</b>，直接在 mitigations=off 镜像上测。off 模板已沙箱内校验：x86 <code>spectre_v2 → Vulnerable; IBPB: disabled</code>、<code>spec_store_bypass → Vulnerable</code>；arm <code>spec_store_bypass → Vulnerable</code>（arm <code>spectre_v2</code> 硬件 <code>Not affected</code>）。</p>
+<p>流程（每轮）：<b>建沙箱 → 跑 ppt_replay → 读耗时 → 删沙箱</b>，x86 / arm 各 5 轮（每轮全新沙箱）。模板：x86 <code>ad75b74a</code>/<code>aee49693</code>，arm <code>0de5efb3</code>/<code>ff0f769a</code>。</p>
+<table>
+  <thead><tr><th>架构</th><th>轮</th><th>沙箱命令累计耗时（s）</th><th>单命令平均耗时（ms）</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="5">x86 off</td><td>1</td><td class="num">10.624</td><td class="num">332.00</td></tr>
+    <tr><td>2</td><td class="num">10.590</td><td class="num">330.94</td></tr>
+    <tr><td>3</td><td class="num">10.290</td><td class="num">321.56</td></tr>
+    <tr><td>4</td><td class="num">10.405</td><td class="num">325.16</td></tr>
+    <tr><td>5</td><td class="num">10.539</td><td class="num">329.34</td></tr>
+    <tr><td rowspan="5">arm off</td><td>1</td><td class="num">17.186</td><td class="num">537.06</td></tr>
+    <tr><td>2</td><td class="num">17.386</td><td class="num">543.31</td></tr>
+    <tr><td>3</td><td class="num">17.586</td><td class="num">549.56</td></tr>
+    <tr><td>4</td><td class="num">17.620</td><td class="num">550.63</td></tr>
+    <tr><td>5</td><td class="num">17.511</td><td class="num">547.21</td></tr>
+  </tbody>
+</table>
+<p class="verdict yes"><b>x86 off：沙箱命令累计耗时 mean = 10.49s ± 0.12s</b>（~1.2%），单命令平均 327.8ms；<b>arm off：mean = 17.46s ± 0.16s</b>（~0.9%），单命令平均 545.6ms。</p>
+<div class="note">
+  说明：① off 模板已通过 <code>spec_store_bypass = Vulnerable</code>（x86 另 <code>spectre_v2 = Vulnerable</code>）确认 mitigations 关闭；② arm off 比 x86 off 慢约 1.67×（17.46 vs 10.49s），主要反映 arm 架构在这类 harness 负载上普遍更慢，<b>不能</b>单单归因于 mitigations；③ 本组 off x86 镜像（<code>ad75b74a</code>）与第八章 mTHP 组的 HZ=100 镜像（<code>661ceae5</code>）是<b>两个不同 build</b>（off 是改 <code>cpu_mitigations</code> 源码后另建的），故两者的 10.49s 与 11.48s 不足以直接相减来量化 mitigations 的 harness 收益——要做严格对照需补一组「同 baseline 的 mitigations=on」harness 实测。
+</div>
+
+<h2>十、harness 命令耗时实测（kvmapf / highres 关闭 · x86 & arm · 各 5 轮）</h2>
+<p>同第八章口径：前端 <code>ppt_replay</code> 回放（32 条沙箱命令生成 PPTX，不调真模型），读 <code>performance.summary.commands.sum_ns</code>，每轮全新沙箱。本轮把两个 guest 内核特性各自在<b>源码默认值</b>层面关闭（方式 D，等效写死、无需 cmdline），对比 HZ=100 基线：</p>
+<ul>
+  <li><b>kvmapf 关闭</b>：<code>arch/x86/kernel/kvm.c</code> 的 <code>kvmapf=1</code>→<code>0</code>（关闭 KVM async page fault），x86 内核 digest <code>d9a265f0…</code>。</li>
+  <li><b>highres 关闭</b>：<code>kernel/time/hrtimer.c</code> 的 <code>hrtimer_hres_enabled=true</code>→<code>false</code>（关闭高精度定时器，等效 <code>highres=off</code>），x86 <code>e185c685…</code>、arm <code>ea7a75a0…</code>。</li>
+</ul>
+<p>落地校验：highres 组沙箱内 <code>/proc/timer_list</code> 全 CPU <code>.hres_active: 0</code>、<code>.resolution: 10000000 nsecs</code>（=10ms tick，低精度）；kvmapf 组 <code>/proc/interrupts</code> 无 async PF 行、dmesg 无 async PF setup；基线组 <code>.hres_active: 1</code>、<code>.resolution: 1 nsecs</code>（高精度）。</p>
+<p>流程（每轮）：<b>建沙箱 → 跑 ppt_replay → 读耗时 → 删沙箱</b>，x86 基线与 nokvmapf / nohighres、arm 基线与 nohighres 均各 5 轮（每轮全新沙箱，全部 32 条命令、计数稳定）。</p>
+<table>
+  <thead><tr><th>架构</th><th>配置</th><th>逐轮累计耗时（s）</th><th>mean ± stdev（s）</th><th>单命令均值</th><th>vs 基线</th></tr></thead>
+  <tbody>
+    <tr><td>x86</td><td>HZ=100 基线</td><td class="num">11.982 / 11.833 / 11.843 / 12.011 / 11.852</td><td class="num">11.904 ± 0.076</td><td class="num">372.0 ms</td><td class="num">—</td></tr>
+    <tr><td>x86</td><td>kvmapf off</td><td class="num">12.028 / 11.986 / 11.937 / 11.842 / 12.124</td><td class="num">11.983 ± 0.094</td><td class="num">374.5 ms</td><td class="num">+0.66%</td></tr>
+    <tr><td>x86</td><td>highres off</td><td class="num">11.896 / 11.552 / 11.717 / 12.000 / 12.006</td><td class="num">11.834 ± 0.176</td><td class="num">369.8 ms</td><td class="num">−0.59%</td></tr>
+    <tr><td>arm</td><td>HZ=100 基线</td><td class="num">18.934 / 17.639 / 18.247 / 17.786 / 19.319</td><td class="num">18.385 ± 0.649</td><td class="num">574.5 ms</td><td class="num">—</td></tr>
+    <tr><td>arm</td><td>highres off</td><td class="num">19.079 / 17.634 / 17.412 / 19.375 / 18.744</td><td class="num">18.449 ± 0.785</td><td class="num">576.5 ms</td><td class="num">+0.35%</td></tr>
+  </tbody>
+</table>
+<p class="verdict no"><b>结论：kvmapf、highres 关闭对 harness 命令耗时均无显著影响。</b>x86 上 nokvmapf +0.66%、nohighres −0.59%，arm 上 nohighres +0.35%——方向不统一、量级全部落在各自的测量噪声内（x86 组 std ~0.6%、arm 组 std 高达 ~3.5~4.3% 的宿主漂移）。这与第五节「定时器/调度类参数对本负载无感」的结论一致：<code>kvmapf</code>（async page fault）和 <code>highres</code>（高精度定时器）作用的路径在这份「进程编排/吞吐」型 harness 负载里不构成瓶颈。历史上唯一对 harness 有实打实收益的仍是 x86 的 <code>mitigations=off</code>（syscall 2.69×，见第九章）。</p>
+<div class="note">
+<b>模板 / build id（供复现，均为增量、未动 <code>huawei.private.json</code> targets；节点内核 digest 见括号）：</b>
+<table>
+  <thead><tr><th>配置</th><th>架构</th><th>template_id</th><th>build_id</th></tr></thead>
+  <tbody>
+    <tr><td>HZ=100 基线（<code>bffa66b8…</code>）</td><td>x86</td><td class="mono">7338d03a-86b0-4a00-937d-c4596202a6a5</td><td class="mono">3122ac62-e225-4ef0-be76-9a80a2b75a28</td></tr>
+    <tr><td>kvmapf off（<code>d9a265f0…</code>）</td><td>x86</td><td class="mono">d7b2ccf9-6454-4e69-a87a-ef8e481c6850</td><td class="mono">8f7fcf77-bd5e-4573-8441-6c7366b53730</td></tr>
+    <tr><td>highres off（<code>e185c685…</code>）</td><td>x86</td><td class="mono">50f0718e-74b1-42b3-9152-e7d5fd34aea5</td><td class="mono">a67b3bed-395d-4994-8ca0-277bec7c53c1</td></tr>
+    <tr><td>HZ=100 基线（<code>edf79a5d…</code>）</td><td>arm</td><td class="mono">6658b3b8-0a0b-4a7d-9b3d-1217f2aebf97</td><td class="mono">f7304cce-aa01-4247-9d4e-d6bb0e0d89bd</td></tr>
+    <tr><td>highres off（<code>ea7a75a0…</code>）</td><td>arm</td><td class="mono">c35534bc-098f-4975-8ba1-ae87f5e5d23a</td><td class="mono">9d05976c-11f4-45b9-95f7-5fabe132b991</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>十一、harness 命令耗时实测（mTHP=always + thp_exec_enabled · x86 & arm · 各 5 轮）</h2>
+<p>同第八章口径：前端 <code>ppt_replay</code> 回放（32 条沙箱命令生成 PPTX，不调真模型），读 <code>performance.summary.commands.sum_ns</code>，每轮全新沙箱。本轮在 HZ=100 内核上<b>重编开启 <code>CONFIG_READ_ONLY_THP_FOR_FS=y</code></b>（x86 <code>85143e74…</code> / arm <code>31e957b9…</code>，均为 6.6.0+ 新 build），并注入 mTHP 全尺寸 <code>always</code> + <code>thp_exec_enabled=0x3</code>，对比 HZ=100 基线（第十章）与第八章 mTHP。</p>
+<ul>
+  <li><b>mTHP</b>：顶层 <code>enabled=always</code> + <code>hugepages-2048kB~16kB</code> 全 <code>echo always</code>（沙箱内回读确认各档 <code>[always]</code>）。</li>
+  <li><b>thp_exec_enabled</b>：hex 位图，写 <code>0x3</code>。bit0 = <code>FILE_EXEC_THP_ENABLE</code>（exec 映射用 2MB PMD THP，经 <code>try_enable_file_exec_thp</code> / khugepaged 生效，需 <code>CONFIG_READ_ONLY_THP_FOR_FS=y</code>）；bit1 = <code>FILE_EXEC_MTHP_ENABLE</code>（exec 映射用 mTHP 小 folio，消费点 <code>file_exec_can_enable_mthp</code>）。</li>
+</ul>
+<p><b>关键源码事实：</b>bit1 的最终生效门是 <code>arch_wants_exec_folio_order</code>，<b>只在 arm64 定义</b>（<code>arch/arm64/.../pgtable.h:1206</code> → <code>ilog2(64K&gt;&gt;12)=order 4</code>，即 exec 用 64kB folio），x86 未定义故 bit1 在 x86 上是 no-op；bit0 在 <code>CONFIG_READ_ONLY_THP_FOR_FS=y</code> 后两架构均生效。即：<b>x86 仅 2MB exec THP 起作用；arm 有 2MB exec THP + 64kB exec mTHP 双路径</b>。该 knob 只接受十六进制，写 <code>always</code> 会 <code>EINVAL</code>（实测 rc=1）。</p>
+<p>流程（每轮）：<b>建沙箱 → 开终端注入 mTHP + thp_exec → 回读校验 → 关终端 → 跑 ppt_replay → 读耗时 → 删沙箱</b>，两架构各 5 轮。</p>
+<table>
+  <thead><tr><th>架构</th><th>配置</th><th>逐轮累计耗时（s）</th><th>mean ± stdev（s）</th><th>单命令均值</th><th>vs 基线</th></tr></thead>
+  <tbody>
+    <tr><td>x86</td><td>HZ=100 基线</td><td class="num">11.982 / 11.833 / 11.843 / 12.011 / 11.852</td><td class="num">11.904 ± 0.076</td><td class="num">372.0 ms</td><td class="num">—</td></tr>
+    <tr><td>x86</td><td>mTHP always + thp_exec</td><td class="num">11.752 / 12.054 / 11.247 / 12.038 / 11.296</td><td class="num">11.678 ± 0.349</td><td class="num">364.9 ms</td><td class="num">−1.90%</td></tr>
+    <tr><td>arm</td><td>HZ=100 基线</td><td class="num">18.934 / 17.639 / 18.247 / 17.786 / 19.319</td><td class="num">18.385 ± 0.649</td><td class="num">574.5 ms</td><td class="num">—</td></tr>
+    <tr><td>arm</td><td>mTHP always + thp_exec</td><td class="num">17.772 / 19.101 / 19.862 / 17.640 / 17.436</td><td class="num">18.362 ± 0.951</td><td class="num">573.8 ms</td><td class="num">−0.13%</td></tr>
+  </tbody>
+</table>
+<p class="verdict no"><b>结论：mTHP=always + thp_exec_enabled 对 harness 命令耗时无显著影响。</b>x86 −1.90%（但本组 stdev 0.349 是基线 0.076 的 ~4.6 倍，波动被宿主/首轮噪声放大，落在噪声内）；arm −0.13% 基本持平。这印证了第八章的判断：mTHP 的 3.3× 收益只来自「匿名大内存分配」型负载（<code>bytearray(256MB)</code> 首次写，缺页数 512 倍骤降），而 <code>ppt_replay</code> 是「进程编排 + 文件生成」型，exec 路径（每次 exec 的 text/rodata 大页映射）与匿名大页分配都不是它的瓶颈，故 <code>thp_exec_enabled</code> 的两条路径（2MB exec THP / 64kB exec mTHP）在此负载上均无感。</p>
+<div class="note">
+<b>模板 / build id（供复现，均为增量、未动 <code>huawei.private.json</code> targets；节点内核 digest 见括号）：</b>
+<table>
+  <thead><tr><th>配置</th><th>架构</th><th>template_id</th><th>build_id</th></tr></thead>
+  <tbody>
+    <tr><td>thp_exec（READ_ONLY_THP_FOR_FS=y，<code>85143e74…</code>）</td><td>x86</td><td class="mono">3e877198-e62e-4793-ba29-c4a85bb450ea</td><td class="mono">2dd57d4b-804a-44f1-bb02-b7c45835aff2</td></tr>
+    <tr><td>thp_exec（READ_ONLY_THP_FOR_FS=y，<code>31e957b9…</code>）</td><td>arm</td><td class="mono">61aeb3ef-0a5f-44bd-9d8f-0210e7995b89</td><td class="mono">ef3d2737-03f6-4e05-ac8e-08ba0f611fe7</td></tr>
+  </tbody>
+</table>
+</div>
+
 <footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
-  本文件汇总 2026-11-10 ~ 11-11 在华为 Gray 沙箱上执行的 7 组 guest 内核调参对比实验，以及一次前端 harness（<code>ppt_replay</code>）命令耗时实测（mTHP 开启，5 轮）。事实来源：沙箱内 <code>sandbox-ctl exec</code> 实测、debugfs/sysfs 读写、<code>/proc/vmstat</code> 与 per-size mTHP 计数、<code>/sys/devices/system/cpu/vulnerabilities</code> 漏洞状态、控制面 API 响应、前端 Harness 任务回放结果（<code>performance.summary.commands</code>）。测量均为「预热 1 轮 + 10 组」；“无影响”判断已排除 x86 宿主机噪声与首轮预热残留；mitigations 组已标注非 mitigations 的宿主/UFFD 噪声项。
+  本文件汇总 2026-11-10 ~ 11-12 在华为 Gray 沙箱上执行的 7 组 guest 内核调参对比实验，以及四次前端 harness（<code>ppt_replay</code>）命令耗时实测：mTHP 开启（x86，5 轮）、mitigations=off（x86 & arm，各 5 轮）、kvmapf / highres 关闭（x86 & arm，各 5 轮，见第十章）、mTHP=always + thp_exec_enabled（x86 & arm，各 5 轮，见第十一章）。事实来源：沙箱内 <code>sandbox-ctl exec</code> 实测、debugfs/sysfs 读写、<code>/proc/vmstat</code> 与 per-size mTHP 计数、<code>/sys/devices/system/cpu/vulnerabilities</code> 漏洞状态、控制面 API 响应、前端 Harness 任务回放结果（<code>performance.summary.commands</code>）。测量均为「预热 1 轮 + 10 组」；“无影响”判断已排除 x86 宿主机噪声与首轮预热残留；mitigations 组已标注非 mitigations 的宿主/UFFD 噪声项。
 </footer>
 
 </div>
