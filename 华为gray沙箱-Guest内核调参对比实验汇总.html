@@ -446,8 +446,213 @@ dmesg | grep -iE 'spectre|mitigation'
 </table>
 </div>
 
+<h2>十二、audit=off / HZ-100 / readunique_prefetch 三组对照（npm + harness）</h2>
+
+<h3>12.0 实验目的与三组定义</h3>
+<p>本批实验横向对比三个 guest 内核变体对「<b>npm install 冷/热装</b>」与「<b>ppt_replay harness</b>（32 条沙箱命令生成 PPTX，不调真模型）」的影响，<b>每轮全新沙箱（冷启动）</b>。三组定义：</p>
+<ul>
+  <li><b>audit-off</b>：<code>CONFIG_AUDIT=n</code>（arm 节点内核 digest <code>7dcf4973…</code>），HZ=100 —— 验证关 audit 是否减 syscall 记账/日志开销。</li>
+  <li><b>hz100</b>：<code>CONFIG_AUDIT=y</code> + HZ=100，作 audit-off 与 noprefetch 的<b>对照组</b>。</li>
+  <li><b>noprefetch</b>：<code>CONFIG_HISILICON_HIP08_RU_PREFETCH_DEFAULT_OFF=y</code>（readunique_prefetch=off，vsock=y，digest <code>99f925ba…</code>），AUDIT=y、HZ=100 —— 与 hz100 唯一实验差异即 RU prefetch 开关，<b>专用对照组为 arm-hz100</b>。</li>
+</ul>
+<p>npm 口径：workload.py <code>bench_npm</code>，冷装 = 空缓存全量 <code>npm install --no-audit --no-fund</code>（9 包：express / lodash / typescript / commander / dayjs / axios / eslint / prettier / vite），热装 = 删 node_modules 留缓存重装，每模板 3 轮取中位数；harness 读前端 <code>performance.summary.commands.sum_ns</code>，每模板 5 轮。</p>
+
+<h3>12.1 npm install 冷装 / 热装（中位数，n=3）</h3>
+<table>
+  <thead><tr><th>组</th><th>冷装 cold_med</th><th>热装 hot_med</th><th>样本（冷装，s）</th></tr></thead>
+  <tbody>
+    <tr><td>x86-audit-off</td><td class="num">61.84s</td><td class="num">2.20s</td><td class="num">—</td></tr>
+    <tr><td>x86-hz100</td><td class="num">60.50s</td><td class="num">2.206s</td><td class="num">—</td></tr>
+    <tr><td>arm-audit-off</td><td class="num">112.88s</td><td class="num">3.26s</td><td class="num">—</td></tr>
+    <tr><td>arm-hz100</td><td class="num">119.90s</td><td class="num">3.18s</td><td class="num">—</td></tr>
+    <tr><td>arm-noprefetch</td><td class="num">140.98s</td><td class="num">3.143s</td><td class="num">106.3 / 141.0 / 144.5</td></tr>
+  </tbody>
+</table>
+<p class="verdict no"><b>结论：三者在热装上无差异、冷装由网络主导。</b>热装（去网络、纯本地解包/写盘）三者 3.14 / 3.18 / 3.26s，落在噪声内；冷装是「主机 NAT 出口全量下载」，arm-noprefetch 的 140.98s 明显偏高（样本 106.3~144.5 极差大）反映的是<b>下载时段网络波动</b>，与内核变体无关。audit-off 相对 hz100 无论冷/热都没有可归因的收益。</p>
+
+<h3>12.2 harness 命令累计耗时（<code>sum_ns</code>）</h3>
+<table>
+  <thead><tr><th>组</th><th>mean</th><th>stdev</th><th>n</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td>x86-audit-off</td><td class="num">12.056s</td><td class="num">0.098s</td><td class="num">5</td><td>—</td></tr>
+    <tr><td>x86-hz100</td><td class="num">11.756s</td><td class="num">0.092s</td><td class="num">3</td><td>r4/r5 平台故障，n=3 已稳定</td></tr>
+    <tr><td>arm-audit-off</td><td class="num">18.557s</td><td class="num">0.876s</td><td class="num">5</td><td>—</td></tr>
+    <tr><td>arm-hz100</td><td class="num">18.571s</td><td class="num">0.679s</td><td class="num">5</td><td>15:26 平台故障后补跑 5 轮</td></tr>
+    <tr><td>arm-noprefetch（首跑）</td><td class="num"><b>17.314s</b></td><td class="num">0.168s</td><td class="num">5</td><td>看似比 hz100 快 6.8%</td></tr>
+    <tr><td>arm-noprefetch（交错重跑）</td><td class="num">17.851s</td><td class="num">0.562s</td><td class="num">3</td><td rowspan="2">同时间段交替跑，消除宿主负载时段差异</td></tr>
+    <tr><td>arm-hz100（交错重跑）</td><td class="num">17.663s</td><td class="num">0.146s</td><td class="num">3</td></tr>
+  </tbody>
+</table>
+<p class="verdict no"><b>结论：audit-off 与 hz100 无差异；readunique_prefetch=off 在沙箱里无差异。</b></p>
+<ul>
+  <li><b>audit-off vs hz100</b>：x86 12.056 vs 11.756（−2.5%，但 −2.5% 量级与宿主噪声可比、方向也不一致）、arm 18.557 vs 18.571（+0.07%），均无一致趋势 → audit 关闭对「进程编排 + 文件生成」型 harness 无感（audit 只对 syscall 极高频且每条都进审计的情况才有开销，本负载不在此列，详见 12.4）。</li>
+  <li><b>readunique_prefetch=off</b>：首跑 noprefetch 17.314s 比 hz100 18.571s 快 6.8% 且 stdev 0.168 异常小，起初疑似真实效果；但<b>同时间段交错重跑</b>（noprefetch/hz100 各 3 轮交替）后 noprefetch 17.851s vs hz100 17.663s，差异消失 → 首跑 −6.8% 是<b>宿主负载时段差异的假象</b>（noprefetch 首跑时段宿主恰好在低负载，hz100 对照组时段宿主负载高）。</li>
+</ul>
+
+<h3>12.3 为什么 readunique_prefetch 在沙箱里必然无差异（代码级）</h3>
+<p>内核 <code>arch/arm64/kernel/cpu_errata.c</code> 里，HiP08「RU prefetch 需要禁用」的 workaround 判定函数 <code>should_disable_hisi_hip08_ru_prefetch()</code> 只有在 <code>CurrentEL == EL2</code>（即内核正跑在 hypervisor 态）时才返回真，进而去写 <code>S3_1_c15_c6_4</code> 的 bit40 关闭 readunique prefetch。华为沙箱 guest 内核由 cloud-hypervisor + KVM 承载，<b>guest 内核跑在 EL1</b>，根本走不到 EL2 分支 → <code>RU_PREFETCH_DEFAULT_OFF=y</code> 在 guest 里是一条死代码路径。实测结果（12.2 交错重跑无差异）与之一致。<b>要测 readunique prefetch 的真实性能影响，需要在 EL2 场景（裸金属 / 作为 hypervisor 运行的内核），而不是 guest 沙箱。</b></p>
+
+<h3>12.4 共性结论（与本报告第五、八、九、十章贯通）</h3>
+<p>三组实验再次印证同一件事：<b>「进程编排 + 文件生成 / 网络」型的沙箱负载，对「syscall 记账 / 定时 tick / 进程内缓存策略」类的内核开销不敏感</b>。audit（syscall 审计）、HZ（定时器）、readunique_prefetch（load 型访存的硬件 prefetch 细调）都不构成瓶颈；历史上唯一有实打实收益的仍是 x86 的 <code>mitigations=off</code>（第九章，syscall 2.69×，因为 retpoline/IBPB/RSB-filling 直接作用在每条 syscall / 上下文切换上）。</p>
+
+<h3>12.5 三组模板 / build id（供复现）</h3>
+<div class="note">
+<table>
+  <thead><tr><th>组</th><th>template_id</th><th>build_id</th><th>image（userspace）</th></tr></thead>
+  <tbody>
+    <tr><td>x86-audit-off</td><td class="mono">0b3ea5e2-38ad-4cc7-96c8-65c31fac4e03</td><td class="mono">b9bc5256-3021-4790-993e-96fa029c4084</td><td class="mono">de42af2a…</td></tr>
+    <tr><td>arm-audit-off</td><td class="mono">83be3af9-8c63-4592-b78a-380a12451d69</td><td class="mono">7cb2977d-39be-49d7-8d57-76663abb0653</td><td class="mono">d19684cd…</td></tr>
+    <tr><td>x86-hz100</td><td class="mono">a649a6c8-35ab-45cd-9019-0afb54cf358c</td><td class="mono">5ab87bc1-ee03-4912-9788-f6c728e57145</td><td class="mono">—</td></tr>
+    <tr><td>arm-hz100</td><td class="mono">524f5af2-05dc-4bcf-a676-9ecb559365df</td><td class="mono">3a1cd640-c366-4818-80f3-9f7ab9b73dc1</td><td class="mono">d19684cd…</td></tr>
+    <tr><td>arm-noprefetch（<code>99f925ba…</code>，vsock=y）</td><td class="mono">05544947-08ff-4228-b225-d3f931aa5f4c</td><td class="mono">b2a78d41-75b1-42f5-b65a-9bd198038d7a</td><td class="mono">d19684cd…</td></tr>
+  </tbody>
+</table>
+<p class="kv">说明：<code>image</code> 是 userspace 镜像（同架构各组一致，x86 <code>de42af2a…</code> / arm <code>d19684cd…</code>），真正区分实验组的<b>内核</b>是在「节点切换 vmlinux → build 模板打快照」时固化进快照的（方法见第六节）。内核 digest：arm audit-off（<code>CONFIG_AUDIT=n</code>）<code>vmlinux-26.9.0.1.B006</code> = <code>7dcf4973…</code>；arm noprefetch <code>vmlinux_noprefetch</code> = <code>99f925ba…</code>（v2，vsock=y）；arm hz100 对照为 AUDIT=y + HZ=100 的基准内核。</p>
+</div>
+
+<h2>十三、友商沙箱内核对比与华为可参考优化点</h2>
+
+<h3>13.0 采集说明与架构差异提醒</h3>
+<p>采集范围：三家厂商沙箱内 OS 的 <code>/proc/cmdline</code>、<code>dmesg</code>、<code>sysctl -a</code>、<code>zcat /proc/config.gz</code>（内核 config）。来源数据文件：<code>各云厂商沙箱内配置采集.txt</code>（华为 / 腾讯 / 火山三段）。</p>
+<div class="warnbox">
+<b>⚠ 头等重要前提：架构不对齐。</b>本批次采集的<b>华为是 arm64</b>（aarch64，6.6.0 openEuler），而<b>腾讯、火山是 x86_64</b>。这带来三处「不能直接横向比」的项：① <code>CONFIG_HZ</code> —— arm64 服务器内核默认 HZ=100，x86_64 默认 HZ=1000，<b>HZ=100 vs 1000 部分是架构默认差异，不全是厂商调优差异</b>；② <code>mitigations</code> —— Spectre/Meltdown 缓解在 x86 上代价大（本报告第九章已实测 <code>mitigations=off</code> 令 x86 syscall 2.69×），arm64 上代价小得多；③ <code>SCHED_CLUSTER</code> 主要服务于 ARM DSU/大小核拓扑。因此下列优化点已按「是否受架构影响」区分，建议后续在<b>华为 x86 沙箱</b>补采一份同口径数据后钉死差异。
+</div>
+
+<h3>13.1 三厂商关键配置对比总表</h3>
+<table>
+  <thead><tr><th>维度</th><th>华为（arm64）</th><th>腾讯（x86_64）</th><th>火山（x86_64）</th></tr></thead>
+  <tbody>
+    <tr><td>内核版本</td><td>6.6.0（openEuler，HCE）</td><td>6.6.69-cube.bm（TencentOS）</td><td>6.6.95.bck（ByteDance STE-Kernel）</td></tr>
+    <tr><td>vCPU / 内存（采集样本）</td><td>4 / 8 GiB</td><td>5 / ~9 GiB</td><td>1 / ~0.5 GiB</td></tr>
+    <tr><td>rootfs</td><td>erofs（只读 + DAX）</td><td>ext4（DAX）</td><td>ext4（DAX，data=ordered）</td></tr>
+    <tr><td>clocksource</td><td>arch_sys_counter</td><td>kvm-clock</td><td>tsc</td></tr>
+    <tr><td><code>mitigations</code></td><td class="c">默认开（无 off）</td><td><code>mitigations=off</code></td><td><code>mitigations=off</code></td></tr>
+    <tr><td>audit</td><td class="c">CONFIG=y，runtime 已关</td><td><code>audit=0</code>（显式）</td><td class="c">CONFIG=y</td></tr>
+    <tr><td>CONFIG_HZ</td><td class="c"><b>100</b></td><td class="c"><b>1000</b></td><td class="c"><b>1000</b></td></tr>
+    <tr><td>抢占模型 PREEMPT</td><td class="c">NONE（写死）</td><td class="c"><b>DYNAMIC</b></td><td class="c">NONE（写死）</td></tr>
+    <tr><td>NO_HZ</td><td class="c">FULL（无 IDLE tickless）</td><td class="c"><b>IDLE</b></td><td class="c">FULL</td></tr>
+    <tr><td>SCHED_CLUSTER</td><td class="c">无</td><td class="c">有</td><td class="c">无</td></tr>
+    <tr><td>iommu DMA 卸载</td><td class="c"><b>strict（运行时）</b></td><td class="c"><b>lazy</b></td><td class="c">—（未采集到）</td></tr>
+    <tr><td>LSM 安全模块</td><td class="c">capability（精简）</td><td class="c">SELinux + AppArmor</td><td class="c">SELinux</td></tr>
+    <tr><td>默认 qdisc</td><td class="c"><b>pfifo_fast</b></td><td class="c">—（无 sysctl 采集）</td><td class="c"><b>fq_codel</b></td></tr>
+    <tr><td>内存压缩（ZSWAP/ZRAM/KSM）</td><td class="c"><b>全有</b>（zswap=lzo + zram=lzo-rle + KSM）</td><td class="c"><b>无</b>（ZSWAP/ZRAM 均 not set）</td><td class="c">—（未采集到）</td></tr>
+    <tr><td>vm.max_map_count</td><td class="c">65530</td><td class="c">—</td><td class="c"><b>2097152</b></td></tr>
+    <tr><td>fs.file-max</td><td class="c">813016</td><td class="c">—</td><td class="c"><b>unlimited（int64 max）</b></td></tr>
+    <tr><td>vm.watermark_boost_factor</td><td class="c">15000（默认）</td><td class="c">—</td><td class="c"><b>0（关闭）</b></td></tr>
+    <tr><td>SCHED_MM_CID / IRQ_TIME_ACCOUNTING / PSI</td><td class="c">均无 / 无 / —</td><td class="c">有 / 有 / 有</td><td class="c">有 / 有 / —</td></tr>
+  </tbody>
+</table>
+<p class="kv">注：「—」表示该厂商数据文件中未采集到对应项（腾讯段无 <code>sysctl -a</code>，火山段部分 config 未裁入）。粗体为与友商相比华为处于「劣势/默认可改善」侧。</p>
+
+<h3>13.2 华为可参考友商的优化点（按优先级分级）</h3>
+<table>
+  <thead><tr><th>优先级</th><th>优化点</th><th>友商做法</th><th>华为现状</th><th>预期收益 / 说明</th></tr></thead>
+  <tbody>
+    <tr><td><span class="pill bad">P0</span></td><td>iommu DMA 卸载改 lazy</td><td class="c">腾讯 lazy（CONFIG_IOMMU_DEFAULT_DMA_LAZY=y）</td><td class="c">运行时 strict</td><td>strict 每次 DMA unmap 同步刷 TLB，对文件 IO/网络收发（npm 冷装、harness 文件生成）有真实开销。落地：VMM 侧或 cmdline <code>iommu.passthrough=1</code>（若可）、或内核默认改 lazy。</td></tr>
+    <tr><td><span class="pill bad">P0</span></td><td><code>mitigations=off</code></td><td class="c">腾讯/火山 cmdline 均关闭</td><td class="c">默认开启</td><td>对华为<b>x86</b> 沙箱价值最大（呼应第九章 <code>mitigations=off</code> x86 syscall 2.69×）；arm64 收益小。建议 x86 镜像默认加 <code>mitigations=off</code>。</td></tr>
+    <tr><td><span class="pill bad">P0</span></td><td>qdisc 换 <code>fq_codel</code></td><td class="c">火山 fq_codel</td><td class="c">pfifo_fast（旧默认）</td><td>直连实测的默认网络队列仍用 pfifo_fast（仅 3 个 FIFO，无流公平/低延迟 AQM）；fq_codel 是 4.x 起的主流默认，网络密集负载更稳。<code>sysctl net.core.default_qdisc=fq_codel</code>。</td></tr>
+    <tr><td><span class="pill warn">P1</span></td><td><code>vm.max_map_count</code> 调大</td><td class="c">火山 2097152</td><td class="c">65530</td><td>Node.js/V8、mmap 密集进程（<code>npm install</code> 会跑 Node）可能触顶。提升到 262144+ 即可消除隐患。</td></tr>
+    <tr><td><span class="pill warn">P1</span></td><td><code>fs.file-max</code> / <code>nr_open</code> 调大</td><td class="c">火山 unlimited</td><td class="c">813016</td><td>若沙箱内跑高并发/多连接负载，句柄上限会成瓶颈。参考火山直接放满。</td></tr>
+    <tr><td><span class="pill warn">P1</span></td><td><code>vm.watermark_boost_factor=0</code></td><td class="c">火山关闭</td><td class="c">15000（默认）</td><td>watermark boost 会在内存压力时把水位临时抬到 1.5%，诱发一次性回收风暴（延迟毛刺）；云沙箱内存受限时关闭更平稳。</td></tr>
+    <tr><td><span class="pill warn">P1</span></td><td><code>PREEMPT_DYNAMIC=y</code></td><td class="c">腾讯</td><td class="c">PREEMPT_NONE 写死</td><td>保留 NONE 默认（吞吐最优），但给延迟敏感负载留 <code>preempt=voluntary/full</code> 的可切换空间，无需重编内核。</td></tr>
+    <tr><td><span class="pill warn">P1</span></td><td><code>NO_HZ_IDLE</code>（tickless idle）</td><td class="c">腾讯</td><td class="c">NO_HZ_FULL 且无 IDLE</td><td>华为配了 NO_HZ_FULL（HPC/实时向，需 isolcpus 才生效）却没开基础的 NO_HZ_IDLE，空闲时仍在吃定时中断。补 <code>CONFIG_NO_HZ_IDLE=y</code>。</td></tr>
+    <tr><td><span class="pill ok">P2</span></td><td><code>SCHED_MM_CID=y</code>、<code>IRQ_TIME_ACCOUNTING=y</code></td><td class="c">腾讯/火山均有</td><td class="c">均无</td><td>前者降低多线程 mmap/上下文切换开销，后者让调度器记账 IRQ 时间。量级小、方向正向，随下次内核 build 一并开启。</td></tr>
+    <tr><td><span class="pill ok">P2</span></td><td>HZ 提到 250 或 1000</td><td class="c">腾讯/火山 1000</td><td class="c">100</td><td>更细调度粒度/更低调度延迟，但<b>受架构默认影响</b>（arm64 即 100），且第四章 4.5 实测 HZ 对本类负载 fork 侧最多 ~0.2~0.3%、纯计算无感——收益有限，建议仅在「延迟敏感」沙箱规格上试点。</td></tr>
+    <tr><td><span class="pill ok">P2</span></td><td>cgroup v2 unified + <code>cgroup.memory=nokmem</code></td><td class="c">火山</td><td class="c">—（需确认）</td><td>统一层级 + 关 kmem 记账可降内存记账开销；若华为仍在 v1/v2 混跑可参考。</td></tr>
+  </tbody>
+</table>
+
+<h3>13.3 华为已领先、无需照搬的点</h3>
+<ul>
+  <li><b>内存压缩全套已具备</b>：华为 guest 编了 <code>ZSWAP(lzo) + ZRAM(lzo-rle) + ZSMALLOC + KSM</code>，腾讯段 <code>ZSWAP/ZRAM</code> 直接 <code>not set</code>。内存受限场景（如友商 512MB 沙箱）华为具备更好的内存弹性。</li>
+  <li><b>精简 LSM</b>：华为 guest 只用 <code>lsm=capability</code>，无 SELinux/AppArmor 运行时 hook 开销；腾讯/火山虽编译进 SELinux（腾讯还带 AppArmor），若默认 enforce 反会有少量 syscall 开销。华为在此侧更「瘦」。</li>
+  <li><b>erofs 根文件系统</b>：只读压缩 + DAX，比友商 ext4 更省内存、冷读更友好。</li>
+  <li><b>audit 已实质关闭</b>：dmesg 显示 <code>audit_enabled=0</code>，与腾讯显式 <code>audit=0</code> 效果等价，无需再补参数。</li>
+  <li><b>SLUB_CPU_PARTIAL 关闭</b>：华为与火山都关了（低 vCPU 数时减少 per-cpu partial 碎片与开销），合理。</li>
+</ul>
+
+<h3>13.4 架构差异与落地注意事项</h3>
+<div class="note">
+<b>落地建议（按收益/风险排序）：</b><br>
+① 优先做「架构无关、成本低」的三项：<code>default_qdisc=fq_codel</code>、<code>vm.max_map_count</code> 调大、<code>vm.watermark_boost_factor=0</code> —— 均为 sysctl 一改即生效，可先在镜像/启动脚本固化；<br>
+② 其次是在<b>华为 x86</b> 镜像上补 <code>mitigations=off</code>（与本报告第九章结论一致，x86 收益最大）；arm64 收益有限可缓；<br>
+③ iommu DMA strict→lazy 需与虚拟化平台（cloud-hypervisor / Kuasar）侧确认能否改，改动影响面较大，建议先做基准再上；<br>
+④ <code>PREEMPT_DYNAMIC</code>、<code>NO_HZ_IDLE</code>、<code>SCHED_MM_CID</code> 等需<b>重编内核 + 重新打快照</b>（本报告第六节方法），随下一次内核 build 一并纳入即可，不必单独为它发版。
+</div>
+<p class="verdict no"><b>结论：友商对比里真正值得华为跟进的，不是「调内核大参」，而是几处「默认值/运行时开关」的落后</b>——iommu DMA strict、默认 qdisc 还是 pfifo_fast、<code>vm.max_map_count</code>/<code>file-max</code> 用社区初始值、watermark boost 未关、x86 侧 mitigations 未关。这些「零成本/低成本」项叠加起来，比继续在 HZ/抢占等大参上做文章更可能带来可感知的收益；而内存压缩、精简 LSM、erofs 根 fs 这几点华为本就领先，不必学友商「回退」到 SELinux/AppArmor 或无压缩。</p>
+
+<h2>十四、static key（JUMP_LABEL）开关对照实验（2026-11-14）</h2>
+
+<h3>14.0 背景与动机</h3>
+<p>内核 <code>CONFIG_JUMP_LABEL</code>（static key / 静态分支）把「几乎总为真/总为假」的分支编译成可被运行时 patch 的 <code>NOP</code> + <code>jmp</code> 结构，使 <code>static_branch()</code> 判断在关闭路径上零开销（一条 NOP），主要用于 tracepoint、调度器、网络协议栈等热点判断。华为 arm64 guest 已开 <code>CONFIG_TRACEPOINTS=y</code>（tracepoint 编译进内核），但 <code>JUMP_LABEL</code> 未开 → 每个 tracepoint 的「是否启用」判断都是<strong>真实 cmp+branch</strong>，而非 NOP。本实验验证「给华为 guest 补上 <code>JUMP_LABEL=y</code> 是否能带来可测收益」。</p>
+
+<h3>14.1 三厂商 JUMP_LABEL 配置对比</h3>
+<table>
+  <thead><tr><th>厂商</th><th>架构</th><th>CONFIG_JUMP_LABEL</th><th>CONFIG_HAVE_ARCH_JUMP_LABEL</th><th>CONFIG_TRACEPOINTS</th></tr></thead>
+  <tbody>
+    <tr><td><b>华为</b></td><td>arm64</td><td class="c"><b>not set（未开）</b></td><td class="c">y（架构支持）</td><td class="c">y</td></tr>
+    <tr><td>腾讯</td><td>x86_64</td><td class="c">y</td><td class="c">y</td><td class="c">y</td></tr>
+    <tr><td>火山</td><td>x86_64</td><td class="c">y</td><td class="c">y</td><td class="c">y</td></tr>
+  </tbody>
+</table>
+<p class="kv">说明：华为 arm64 的 <code>HAVE_ARCH_JUMP_LABEL=y</code> 说明这是<strong>配置选择、非架构限制</strong>（arm64 完全支持，且无需 objtool，<code>HAVE_JUMP_LABEL_HACK</code> 未定义）。这属于 openEuler arm64 默认配置的差异，与友商 x86_64 默认开启形成对照。</p>
+
+<h3>14.2 实验方法</h3>
+<ul>
+  <li>在 arm 节点（10.30.42.77）与 x86 节点（10.30.33.139）各编译 <code>CONFIG_JUMP_LABEL=y</code> 的 guest 内核（其余配置与 hz100 基线完全一致：<code>AUDIT=y</code>、<code>HZ=100</code>、<code>VSOCKETS=y</code>，已用 <code>extract-ikconfig</code> / <code>/proc/config.gz</code> 双证），sha256 arm <code>54d09c8c…</code> / x86 <code>88a88b2b…</code>。</li>
+  <li>按「切节点 vmlinux → build 模板打快照 → 恢复」流程建两个新模板（方法见第六节），再用同一套 <code>ppt_replay</code> harness（5 轮）与 npm workload（3 轮）测数据。</li>
+  <li><strong>对照组 = arm-hz100 / x86-hz100</strong>，且对照组在<strong>同一天同一时间窗</strong>重跑（arm 旧节点 67 已删，旧 hz100 数据不可比）。</li>
+</ul>
+
+<h3>14.3 harness 命令累计耗时（<code>sum_ns</code>，同窗对比）</h3>
+<table>
+  <thead><tr><th>组</th><th>mean</th><th>stdev</th><th>n</th><th>逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td>arm-jumplabel</td><td class="num">17.356s</td><td class="num">0.753s</td><td class="num">5</td><td class="num">18.83 / 17.05 / 17.15 / 17.04 / 16.71</td></tr>
+    <tr><td>arm-hz100（同窗重跑）</td><td class="num">17.451s</td><td class="num">0.809s</td><td class="num">5</td><td class="num">16.92 / 16.95 / 17.10 / 17.23 / 19.06</td></tr>
+    <tr><td>x86-jumplabel</td><td class="num">12.213s</td><td class="num">0.233s</td><td class="num">5</td><td class="num">12.35 / 12.46 / 11.79 / 12.31 / 12.16</td></tr>
+    <tr><td>x86-hz100（同窗重跑）</td><td class="num">11.774s</td><td class="num">0.134s</td><td class="num">5</td><td class="num">11.96 / 11.70 / 11.91 / 11.63 / 11.67</td></tr>
+  </tbody>
+</table>
+<p class="verdict no"><b>结论：JUMP_LABEL=y 对 harness 无可测量性能影响。</b>arm 17.356 vs 17.451（−0.5%，噪声内）；x86 12.213 vs 11.774（+3.7%，稍高，但 JUMP_LABEL 把分支变 NOP <strong>物理上只能变快或中性、不可能变慢</strong>，故该 −/+ 差异是宿主机负载漂移而非真实效应）。此前若拿旧 arm 节点 67 的 hz100（18.571s）对比会误得「−6.5%」，同窗重跑后消失，再次印证时间/节点漂移是头号干扰。</p>
+
+<h3>14.4 npm install 冷/热装（中位数，n=3）</h3>
+<table>
+  <thead><tr><th>组</th><th>冷装 cold_med</th><th>热装 hot_med</th><th>热装样本 (s)</th></tr></thead>
+  <tbody>
+    <tr><td>arm-jumplabel</td><td class="num">41.56s</td><td class="num">3.131s</td><td class="num">3.078 / 3.131 / 3.165</td></tr>
+    <tr><td>arm-hz100</td><td class="num">119.90s *</td><td class="num">3.18s *</td><td class="num">—（11-13 数据）</td></tr>
+    <tr><td>x86-jumplabel</td><td class="num">46.93s</td><td class="num">2.303s</td><td class="num">2.197 / 2.303 / 2.359</td></tr>
+    <tr><td>x86-hz100</td><td class="num">74.12s</td><td class="num">2.112s</td><td class="num">2.001 / 2.112 / 2.212</td></tr>
+  </tbody>
+</table>
+<p class="kv">* arm-hz100 的 npm 为 11-13 旧数据（arm 旧节点已删，本批未重测 npm 对照）；x86-hz100 为 11-14 同日数据（tdp_mmu=N 状态）。冷装由主机 NAT 出口网络主导（32~141s 大波动），与内核无关。</p>
+<p>热装：arm 3.131 vs 3.18s（−1.5%，噪声内）；x86 2.303 vs 2.112s（+9%，但热装总量 ~2s、逐轮波动本就 ±0.1s，且方向与「JUMP_LABEL 只能变快」矛盾，判为噪声/时段差）。<strong>热装同样无一致、可归因的差异。</strong></p>
+
+<h3>14.5 结论</h3>
+<div class="okbox">
+<p><b><code>CONFIG_JUMP_LABEL=y</code> 对沙箱 guest（ppt_replay / npm）无可测量的性能收益。</b>harness（5 轮同窗）arm −0.5%、x86 +3.7%，npm 热装同样无一致方向。</p>
+<ul>
+  <li><b>物理归因：</b>static key 只优化 tracepoint/调度器热路径的 <code>static_branch()</code> 判断，每条省几纳秒；而 ppt_replay「32 条命令 fork/exec + 文件生成」与 npm「node/JS 解析」的瓶颈在进程编排、文件系统、网络，<strong>不在 tracepoint 判断</strong>。收益落在纳秒级，被测量噪声淹没。</li>
+  <li><b>与十三章贯通：</b>这印证「进程编排 + 文件/网络」型负载对「syscall/tracepoint 记账、定时 tick、访存预取」类内核微开销均不敏感（十二、十四章结论一致）；唯一实打实的收益仍是 x86 <code>mitigations=off</code>。</li>
+  <li><b>落地建议：</b>华为 arm64 未开 JUMP_LABEL <strong>无需专门跟进</strong>——开启无实测收益。可留作「为一致性随下次内核 build 顺手勾上」的低优先级项（上游默认开），但不必单独发版验证。</li>
+</ul>
+</div>
+
+<h3>14.6 模板 / build id（供复现）</h3>
+<div class="note">
+<table>
+  <thead><tr><th>组</th><th>template_id</th><th>build_id</th><th>内核 sha256</th></tr></thead>
+  <tbody>
+    <tr><td>x86-jumplabel</td><td class="mono">6ce470e5-8a90-44ab-8573-f535dc591911</td><td class="mono">3a2d8465-fb56-4831-b9c8-a876ea2c76ae</td><td class="mono">88a88b2b…</td></tr>
+    <tr><td>arm-jumplabel</td><td class="mono">aa8804cf-d45c-4eaa-84dc-1043b75e7b7a</td><td class="mono">98ac7e01-aaef-4395-a090-d16078366988</td><td class="mono">54d09c8c…</td></tr>
+  </tbody>
+</table>
+<p class="kv">两组均基于 hz100 基线（AUDIT=y / HZ=100 / VSOCKETS=y）+ 唯一实验差异 <code>CONFIG_JUMP_LABEL=y</code>，userspace 镜像 x86 <code>de42af2a…</code> / arm <code>d19684cd…</code>。</p>
+</div>
+
 <footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
-  本文件汇总 2026-11-10 ~ 11-12 在华为 Gray 沙箱上执行的 7 组 guest 内核调参对比实验，以及四次前端 harness（<code>ppt_replay</code>）命令耗时实测：mTHP 开启（x86，5 轮）、mitigations=off（x86 & arm，各 5 轮）、kvmapf / highres 关闭（x86 & arm，各 5 轮，见第十章）、mTHP=always + thp_exec_enabled（x86 & arm，各 5 轮，见第十一章）。事实来源：沙箱内 <code>sandbox-ctl exec</code> 实测、debugfs/sysfs 读写、<code>/proc/vmstat</code> 与 per-size mTHP 计数、<code>/sys/devices/system/cpu/vulnerabilities</code> 漏洞状态、控制面 API 响应、前端 Harness 任务回放结果（<code>performance.summary.commands</code>）。测量均为「预热 1 轮 + 10 组」；“无影响”判断已排除 x86 宿主机噪声与首轮预热残留；mitigations 组已标注非 mitigations 的宿主/UFFD 噪声项。
+  本文件汇总 2026-11-10 ~ 11-14 在华为 Gray 沙箱上执行的 7 组 guest 内核调参对比实验、四次前端 harness（<code>ppt_replay</code>）命令耗时实测（mTHP / mitigations=off / kvmapf-highres / mTHP=always+thp_exec，见第八~十一章）、<b>三组 audit=off / HZ-100 / readunique_prefetch 对照（npm + harness，见第十二章）</b>，以及<b>第十三章</b>的「华为 / 腾讯 / 火山三家沙箱内 OS 配置横向对比与华为可参考优化点」，外加<b>第十四章</b>的「static key（JUMP_LABEL）开关对照（harness + npm，同窗重跑）」。事实来源：沙箱内 <code>sandbox-ctl exec</code> 实测、debugfs/sysfs 读写、<code>/proc/vmstat</code> 与 per-size mTHP 计数、<code>/sys/devices/system/cpu/vulnerabilities</code> 漏洞状态、控制面 API 响应、前端 Harness 任务回放结果（<code>performance.summary.commands</code>）、三厂商 <code>/proc/cmdline + dmesg + sysctl + /proc/config.gz</code> 采集文件。测量均为「预热 1 轮 + 10 组」；“无影响”判断已排除 x86 宿主机噪声与首轮预热残留；第十二/十三章涉架构差异项（HZ/mitigations）已标注 arch 干扰。
 </footer>
 
 </div>

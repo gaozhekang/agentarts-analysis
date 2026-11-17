@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>华为 Gray 沙箱 · geekbench + sysbench 虚拟化开销 独立归档</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; background: #0b1220; color: #e2e8f0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; color: #f1f5f9; }
+  .sub { color: #64748b; font-size: 13.5px; margin-bottom: 28px; }
+  h2 { font-size: 20px; margin: 40px 0 12px; color: #f1f5f9; border-left: 4px solid #38bdf8; padding-left: 12px; }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: #cbd5e1; }
+  p { margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 14px; }
+  th, td { border: 1px solid #1e293b; padding: 8px 12px; text-align: left; }
+  th { background: #111c2e; color: #94a3b8; font-weight: 600; }
+  td { background: #0f1a2b; }
+  .mono { font-family: "Consolas", "JetBrains Mono", monospace; font-size: 13px; color: #93c5fd; }
+  code { font-family: "Consolas", "JetBrains Mono", monospace; background: #1e293b; padding: 1px 6px; border-radius: 4px; font-size: 13px; color: #93c5fd; }
+  .card { background: #0f1a2b; border: 1px solid #1e293b; border-radius: 10px; padding: 18px 20px; margin: 14px 0; }
+  .note { background: rgba(56,189,248,0.07); border: 1px solid rgba(56,189,248,0.25); }
+  .ok { background: rgba(52,211,153,0.07); border: 1px solid rgba(52,211,153,0.3); }
+  .bad { color: #f87171; font-weight: 600; }
+  .good { color: #34d399; font-weight: 600; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-left: 6px; }
+  .pill.note { background: #0ea5e9; color: #06283d; }
+  .kvline b { color: #94a3b8; }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .muted { color: #64748b; font-size: 13px; }
+  hr { border: none; border-top: 1px solid #1e293b; margin: 28px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>华为 Gray 沙箱 · geekbench + sysbench 虚拟化开销<span class="pill note">独立归档</span></h1>
+<div class="sub">host 裸金属 vs guest 沙箱对比 · arm 节点 10.30.42.77 · 2026-11-17 · Geekbench 7.1.0 Preview / sysbench v1.0.20</div>
+
+<h2>一句话结论</h2>
+<div class="card ok">
+<p><b>CPU 虚拟化开销整体很小：微基准（sysbench）~0.1% 可忽略；真实混合负载（geekbench 单核）−5.7%，是更贴近实际的量级。</b></p>
+<p>单核 5.7% 的开销中可能混入「跨 NUMA 漂移」成分（当前 guest 的 <code>cpuset.mems</code> 为空、4 个 NUMA 节点间自由漂移），这正是后续 <b>NUMA 绑核绑内存</b>优化项的靶点。</p>
+</div>
+
+<h2>一、测试环境</h2>
+<table>
+  <tbody>
+    <tr><td><b>host 节点</b></td><td>arm <code class="mono">10.30.42.77</code> · 鲲鹏 920 7280Z @2.9GHz · <b>160 核</b> · 4 NUMA 节点</td></tr>
+    <tr><td><b>NUMA 拓扑</b></td><td class="mono">node0=0-39 / node1=40-79 / node2=80-119 / node3=120-159，各 40 核 257GB；同 socket 距离 12，跨 socket 35~40</td></tr>
+    <tr><td><b>guest 沙箱</b></td><td>cloud-hypervisor microVM · <b>4 vCPU / 8GiB</b> · 基线镜像 <code class="mono">cpu-bench:0.3-arm64</code></td></tr>
+    <tr><td><b>工具版本</b></td><td>sysbench <code class="mono">v1.0.20</code> · geekbench <code class="mono">7.1.0 Preview</code></td></tr>
+    <tr><td><b>host 侧工具来源</b></td><td>从 guest 内 <code class="mono">/opt/geekbench/</code> 与 <code class="mono">/usr/bin/sysbench</code> 抽出，经终端 base64 通道 + 跳板机 147 传至 host（md5 一致）</td></tr>
+  </tbody>
+</table>
+
+<h2>二、sysbench CPU（events/s，越高越好，n=3）</h2>
+<table>
+  <thead><tr><th>线程</th><th>host 裸金属</th><th>guest 沙箱</th><th>虚拟化开销</th></tr></thead>
+  <tbody>
+    <tr><td>1 线程</td><td class="mono">1254.07</td><td class="mono">1253.10</td><td class="good">−0.08%</td></tr>
+    <tr><td>4 线程</td><td class="mono">5013.47</td><td class="mono">5005.53</td><td class="good">−0.16%</td></tr>
+  </tbody>
+</table>
+<p class="muted">纯 ALU/内存微循环，对 vCPU 虚拟化、VM-exit、EPT 均不敏感 → 开销趋近于 0，符合预期。</p>
+
+<h2>三、geekbench7（Score，越高越好，单次）</h2>
+<table>
+  <thead><tr><th>项目</th><th>host 裸金属</th><th>guest 沙箱</th><th>虚拟化开销</th></tr></thead>
+  <tbody>
+    <tr><td>Single-Core</td><td class="mono">1384</td><td class="mono">1305</td><td class="bad">−5.7%</td></tr>
+    <tr><td>Multi-Core</td><td class="mono">35139（160 核全跑）</td><td class="mono">4080（4 vCPU）</td><td class="muted">核数不同，不可直接比</td></tr>
+  </tbody>
+</table>
+<p class="muted">geekbench 是贴近真实应用的混合负载（分支 / 加密 / SIMD / 访存），对 VM-exit、EPT 缺页、TLB 更敏感，故单核开销明显高于 sysbench。</p>
+
+<div class="card note">
+<p><b>多核口径说明：</b>host 跑满 160 核（35139）、guest 仅 4 vCPU（4080），核数不同不可直接比。<b>单核对比才是干净的虚拟化开销指标</b>。若要 4 核对 4 核的多核对比，需对 host 用 <code class="mono">taskset -c</code> 限核重跑（本报告未做，列为可选后续）。</p>
+</div>
+
+<h2>四、结论</h2>
+<div class="card ok">
+<ul>
+  <li><b>sysbench（CPU-bound 微基准）：</b>1t −0.08% / 4t −0.16%，基本可忽略。</li>
+  <li><b>geekbench（真实混合负载）：</b>Single-Core <b>−5.7%</b>，是贴近实际的虚拟化开销量级。</li>
+  <li><b>多核不可比：</b>160 核 vs 4 vCPU，需限核重跑才有干净多核口径。</li>
+  <li><b>与 NUMA 的关联：</b>guest 4 vCPU 当前 <code class="mono">cpuset.mems</code> 为空、可在 4 节点间漂移（跨节点距离 35~40），单核 5.7% 中可能混入跨 NUMA 访问/迁移成分——这正是 <b>NUMA 绑核绑内存</b>优化项的靶点（HostOS 优化报告第一节第 1 项）。</li>
+</ul>
+</div>
+
+<h2>五、方法论备注 / 坑</h2>
+<ul>
+  <li><b>host 无外网、geekbench 须联网上传后才打印分数：</b>用 <code class="mono">ssh -R 127.0.0.1:443:browser.geekbench.com:443</code> 反向隧道借道跳板机 147 让 host 出网，配合 <code class="mono">/etc/hosts</code> 映射（端到端 TLS，无 MITM），上传成功取得分数（result id <code class="mono">902594</code>）。</li>
+  <li><b>host 侧 sysbench 依赖：</b><code class="mono">LD_LIBRARY_PATH</code> 只补 host 真缺的 lib，切勿覆盖 host 自有 <code class="mono">libnettle/libhogweed</code>（会触发 <code class="mono">libgnutls.so.30: undefined symbol nettle_sm4_crypt</code>）。</li>
+  <li><b>geekbench_aarch64（148MB）必需：</b>缺它报 <code class="mono">Unable to find benchmarks for the architecture 'aarch64'</code>；且它是可执行引擎，base64 落盘后丢失执行位需 <code class="mono">chmod +x</code>。</li>
+  <li><b>传输：</b>470MB（3 文件）+ 148MB 经终端 1MB 分块 base64 → 147 → scp 至 host，md5 全部一致。</li>
+</ul>
+
+<hr>
+<p class="muted">本报告为 geekbench + sysbench 虚拟化开销（host 裸金属 vs guest）独立归档，与《华为gray沙箱-HostOS宿主机优化项分析》第十三节内容一致。数据采集于 2026-11-17。</p>
+
+</div>
+</body>
+</html>

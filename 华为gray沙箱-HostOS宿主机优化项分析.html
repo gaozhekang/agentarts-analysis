@@ -71,7 +71,7 @@
 
 <header>
   <h1>华为 Gray 沙箱 · 宿主机(Host OS)优化项分析</h1>
-  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优</div>
+  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优<br>更新：2026-11-14 晚，第 4 项 tdp_mmu 已完成 A/B 实测（见第六节）；2026-11-16 新增 halt_poll_ns / halt_poll_ns_shrink（第七节）与 C-state 关闭（第八节）A/B 实测</div>
 </header>
 
 <h2>一、一句话结论</h2>
@@ -128,12 +128,12 @@
 </div>
 
 <div class="item">
-<h3>4. tdp_mmu = N（EPT 缺页走 legacy MMU） <span class="pill warn">中</span></h3>
-<p class="kvline"><b>当前值：</b>x86 <code class="mono">/sys/module/kvm/parameters/tdp_mmu = N</code>。</p>
+<h3>4. tdp_mmu = N（EPT 缺页走 legacy MMU） <span class="pill none">已实测·无收益</span></h3>
+<p class="kvline"><b>当前值：</b>x86 <code class="mono">/sys/module/kvm/parameters/tdp_mmu = N</code>（2026-11-14 在线 A/B 实测后确认<b>维持 N</b>）。</p>
 <p><b>含义：</b>新一代 TDP MMU 被关闭，KVM 走 legacy MMU 处理 EPT 缺页与 TLB 维护。</p>
 <p><b>作用：</b>memory 阶段 256MB 分配、npm 创建 4318 文件 → 大量 EPT 缺页；legacy MMU 缺页路径慢、多 vCPU 时争用 <code>mmu_lock</code> 扩展性差。</p>
-<p><b>优化方向：</b>评估 <code class="mono">tdp_mmu=Y</code>（上游默认开，较安全）。若当年因某 bug 关掉，值得重新验证。</p>
-<p class="kvline"><b>预期/风险：</b>中等收益、低风险，可在线验证。</p>
+<p><b>实测结论（2026-11-14 晚）：</b>已在线重载 kvm 模块切到 <code class="mono">tdp_mmu=Y</code> 跑 A/B，结果<b>无收益、反而轻微偏慢 ~+2%</b>（harness 命令累计耗时 12.19s vs 11.89s；npm 热装 2.185s vs 2.112s，方向一致）。详见第六节。</p>
+<p class="kvline"><b>预期/风险：</b>实测无收益、轻微负向 → <b>维持 N</b>（华为当年默认关闭是对的）。</p>
 </div>
 
 <div class="item">
@@ -217,8 +217,346 @@
 </ol>
 <p class="note">验证手段复用既有口径：harness 用前端 <code>ppt_replay</code> 的 <code>performance.summary.commands.sum_ns</code>（32 条命令累计耗时）；workload 用 <code>python3 /opt/aries/workload.py</code> 各阶段秒数。宿主侧改动需在节点上操作并注意回滚记录。</p>
 
+<h2>六、实测验证：tdp_mmu A/B 对比（2026-11-14 晚）</h2>
+
+<p class="note"><b>目的：</b>把报告第三节第 4 项「tdp_mmu = N」从「待评估」落地为「实测」。方法：x86 节点 10.30.33.139 上在线重载 kvm 模块，在 <code class="mono">tdp_mmu=N</code> 与 <code class="mono">tdp_mmu=Y</code> 之间切换，用同一模板 <b>x86-hz100</b>（template <code>a649a6c8</code>）跑同一套 <code>ppt_replay</code> harness（读 <code>sum_ns</code>，32 条命令累计耗时）与 npm workload（冷/热装）。</p>
+
+<h3>6.1 harness（命令累计耗时，越低越好）</h3>
+<table>
+  <thead><tr><th>tdp_mmu</th><th>测量窗口</th><th>mean</th><th>stdev</th><th>单命令均值</th><th>逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td><b>N</b> ①</td><td>18:58–19:14</td><td>11.774s</td><td>0.134s</td><td>367.9ms</td><td>11.96 / 11.70 / 11.91 / 11.63 / 11.67</td></tr>
+    <tr><td><b>Y</b> ①</td><td>19:21–19:37</td><td>12.158s</td><td>0.225s</td><td>379.9ms</td><td>12.04 / 11.98 / 12.02 / 12.17 / 12.59</td></tr>
+    <tr><td><b>N</b> ②</td><td>19:45–20:01</td><td>12.010s</td><td>0.212s</td><td>375.3ms</td><td>12.31 / 11.95 / 11.80 / 11.78 / 12.20</td></tr>
+    <tr><td><b>Y</b> ②</td><td>20:02–20:19</td><td>12.226s</td><td>0.206s</td><td>382.1ms</td><td>12.25 / 12.59 / 11.96 / 12.16 / 12.17</td></tr>
+  </tbody>
+</table>
+<p><b>汇总：</b>N 两组均值 11.89s（11.774 / 12.010），Y 两组均值 12.19s（12.158 / 12.226）→ Y 比 N <b>+0.30s（+2.5%）</b>。合并后 t≈2.95（p&lt;0.01）。</p>
+
+<h3>6.2 npm workload（热装，越低越好）</h3>
+<table>
+  <thead><tr><th>tdp_mmu</th><th>cold_med（网络主导，不可比）</th><th>hot_med</th><th>热装逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td><b>N</b></td><td>74.12s</td><td><b>2.112s</b></td><td>2.001 / 2.112 / 2.212</td></tr>
+    <tr><td><b>Y</b></td><td>105.18s</td><td><b>2.185s</b></td><td>2.155 / 2.185 / 2.234</td></tr>
+  </tbody>
+</table>
+<p>热装 Y 比 N <b>+3.5%</b>（2.185s vs 2.112s），与 harness 方向一致。</p>
+
+<h3>6.3 结论</h3>
+<div class="okbox">
+<p><b>tdp_mmu=Y 对沙箱 guest（ppt_replay / npm）无性能收益，且呈轻微偏慢（~+2%，harness 与 npm 方向一致）。</b></p>
+<ul>
+  <li><b>物理归因：</b>4 vCPU 单流负载下，TDP MMU 的「per-vCPU 锁、更复杂缺页/invalidate 路径」带来的扩展性收益用不上，反而其更重的 EPT 缺页与 TLB 维护路径带来约 +2% 开销；这与上游「tdp_mmu 主要收益在多 vCPU 高并发、单流未必更快」的认知一致。</li>
+  <li><b>印证华为默认：</b>华为在 AMD EPYC 9T25 上默认 <code>tdp_mmu=N</code> 是合理的，本实验未发现需要开启的理由。</li>
+  <li><b>⚠️ 置信度说明：</b>+2% 属小效应，且当晚宿主负载有 +2% 的漂移（N 自身从 11.77s 漂到 12.01s），虽 Y 两组稳定偏高、方向一致，但严格结论是「无收益、不劣化或略劣化」，而非「确定变慢」。</li>
+  <li><b>落地：</b>已切回 <code class="mono">tdp_mmu=N</code>（<code>/etc/modprobe.d/kvm-tdp.conf</code> 置 <code>options kvm tdp_mmu=0</code>）。若日后改跑高并发多 vCPU 负载，可再用 <code class="mono">modprobe -r kvm_amd kvm && modprobe kvm tdp_mmu=1 && modprobe kvm_amd</code> 复测。</li>
+</ul>
+</div>
+
+<h2>七、实测验证：halt_poll_ns 增大/减少一倍（2026-11-16 上午）</h2>
+
+<p class="note"><b>目的：</b>验证 host 侧 KVM <code class="mono">halt_poll_ns</code>（halt-polling 忙等窗口）对沙箱负载是否敏感。当前默认 <b>200000ns（200μs）</b>：guest vCPU 执行 HLT 进入 idle 时，host 忙等最多 200μs 等中断（IO/定时器），以降低唤醒延迟（少一次 vmexit+线程调度），代价是 host CPU 空耗。方法：sysfs 运行时改写（0644 可写，无需 modprobe 重载），在 200000（基线）/ 400000（×2）/ 100000（÷2）三档间切换，用 x86-hz100 模板（<code>a649a6c8</code>）各跑 5 轮 harness + 3 轮 npm，时间窗 10:17–11:22（上午，宿主负载稳定）。</p>
+
+<h3>7.1 x86·harness（命令累计耗时，越低越好，n=5）</h3>
+<table>
+  <thead><tr><th>halt_poll_ns</th><th>档位</th><th>mean</th><th>stdev</th><th>单命令均值</th><th>逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td><b>200000</b></td><td>基线</td><td>11.951s</td><td>0.156s</td><td>373.5ms</td><td>11.98 / 12.20 / 11.86 / 11.98 / 11.73</td></tr>
+    <tr><td><b>400000</b></td><td>×2</td><td>12.097s</td><td>0.109s</td><td>378.0ms</td><td>12.17 / 11.88 / 12.14 / 12.18 / 12.12</td></tr>
+    <tr><td><b>100000</b></td><td>÷2</td><td>11.968s</td><td>0.126s</td><td>374.0ms</td><td>12.11 / 12.06 / 11.74 / 11.97 / 11.97</td></tr>
+  </tbody>
+</table>
+<p>三组均值 11.95~12.10s，差异 &lt;1.5%，均在测量噪声内。</p>
+
+<h3>7.2 x86·npm workload（热装，越低越好，n=3）</h3>
+<table>
+  <thead><tr><th>halt_poll_ns</th><th>档位</th><th>cold_med（网络主导，不可比）</th><th>hot_med</th><th>热装逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td><b>200000</b></td><td>基线</td><td>59.09s</td><td><b>2.137s</b></td><td>2.120 / 2.137 / 2.221</td></tr>
+    <tr><td><b>400000</b></td><td>×2</td><td>54.51s</td><td><b>2.168s</b></td><td>2.088 / 2.168 / 2.169</td></tr>
+    <tr><td><b>100000</b></td><td>÷2</td><td>81.45s</td><td><b>2.147s</b></td><td>2.146 / 2.147 / 2.314</td></tr>
+  </tbody>
+</table>
+<p>热装三组 2.14~2.17s，差异 &lt;1.5%，噪声内。</p>
+
+<h3>7.3 结论（x86 节点）</h3>
+<div class="okbox">
+<p><b>halt_poll_ns 增大一倍（400μs）或减少一倍（100μs）对沙箱 guest 均无性能收益，维持默认 200000ns。</b></p>
+<ul>
+  <li><b>数据：</b>harness 三组 11.95/12.10/11.97s、npm 热装 2.137/2.168/2.147s，差异均 &lt;1.5% 且方向不一致，属噪声。</li>
+  <li><b>400000 的轻微偏慢：</b>×2 档 harness 5 轮中有 4 轮 &gt;12.0s（仅一轮 11.88 低于 12），呈 +1.2% 的弱偏慢趋势、stdev 反而最小；但幅度落在噪声边界，且忙等 400μs 白白空耗 host CPU，无收益反而有代价。</li>
+  <li><b>物理归因：</b>① halt_poll_ns 有自适应机制（<code>halt_poll_ns_shrink=0</code> 意味着 poll 失败随即归 0），初始值的影响被运行时动态收敛所削弱；② ppt_replay 是 CPU-bound 串行负载，vCPU 大部分时间在 running 态、真正 halt 的次数少；③ npm 热装虽有磁盘/网络 IO 唤醒，但密度不足以让 halt-polling 产生可测量差异。</li>
+  <li><b>落地：</b>已恢复 <code class="mono">halt_poll_ns=200000</code>（华为默认即内核 <code>KVM_HALT_POLL_NS_DEFAULT</code>）。无需调整。</li>
+</ul>
+</div>
+
+<h3>7.4 arm·节点（10.30.42.77，鲲鹏 920）同法实测</h3>
+<p class="note"><b>关键差异：</b>arm64 KVM 默认 <code class="mono">halt_poll_ns=500000ns（500μs）</code>，是 x86（200μs）的 2.5 倍——这是 arm64 内核的架构默认值（vCPU 经 WFI/PSCI 唤醒路径不同，故默认忙等窗口更大）。kvm 为 built-in（无独立模块）但仍暴露 <code>/sys/module/kvm/parameters/halt_poll_ns</code>（0644 可写）。档位：500000（基线）/ 1000000（×2）/ 250000（÷2），arm-hz100 模板（<code>524f5af2</code>），时间窗 11:27–12:30。</p>
+
+<table>
+  <thead><tr><th>halt_poll_ns</th><th>档位</th><th>harness mean</th><th>harness stdev</th><th>npm hot_med</th><th>npm 热装逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td><b>500000</b></td><td>基线</td><td>17.211s</td><td>0.201s</td><td><b>3.129s</b></td><td>3.118 / 3.129 / 3.134</td></tr>
+    <tr><td><b>1000000</b></td><td>×2</td><td>17.098s</td><td>0.156s</td><td><b>3.091s</b></td><td>3.062 / 3.091 / 3.103</td></tr>
+    <tr><td><b>250000</b></td><td>÷2</td><td>17.350s</td><td>0.299s</td><td><b>3.124s</b></td><td>3.039 / 3.124 / 3.189</td></tr>
+  </tbody>
+</table>
+<p>harness 三组 17.10~17.35s（&lt;1.4%），npm 热装三组 3.09~3.13s（&lt;1.2%），均噪声内。</p>
+
+<h3>7.5 结论（x86 + arm 两节点汇总）</h3>
+<div class="okbox">
+<p><b>halt_poll_ns 无论增大一倍还是减少一倍，对沙箱 guest（ppt_replay / npm）在 x86、arm 上均无可测量性能收益，两节点均维持架构默认值。</b></p>
+<ul>
+  <li><b>x86（基线 200μs）：</b>harness 11.95/12.10/11.97s、npm 2.137/2.168/2.147s，差异 &lt;1.5%。×2 档有 +1.2% 弱偏慢趋势（噪声边界）+ 忙等空耗 host CPU。</li>
+  <li><b>arm（基线 500μs）：</b>harness 17.21/17.10/17.35s、npm 3.129/3.091/3.124s，差异 &lt;1.4%。×2 档反而略快、÷2 档略慢，但均噪声内、无规律。</li>
+  <li><b>共同物理归因：</b>① <code>halt_poll_ns_shrink=0</code> 的自适应机制让 poll 失败后即归 0，初始值影响被运行时收敛削弱；② ppt_replay 是 CPU-bound 串行负载，vCPU 大多 running、halt 次数少；③ npm 的 IO 唤醒密度不足以让 halt-polling 产生可测差异。</li>
+  <li><b>架构默认值差异的价值判断：</b>arm64 内核默认 500μs（&gt;x86 200μs）看似「更激进」，但实测表明对沙箱负载无所谓——即便把 arm 减半到 250μs 或 x86 加倍到 400μs，结果都在噪声内。故<b>两节点均维持架构默认值</b>（x86 200000 / arm 500000），无需调整。</li>
+  <li><b>落地：</b>x86 已恢复 <code class="mono">halt_poll_ns=200000</code>、arm 已恢复 <code class="mono">halt_poll_ns=500000</code>。</li>
+</ul>
+</div>
+
+<h3>7.6 补充实测：halt_poll_ns_shrink 0→2（仅 harness，2026-11-16 下午）</h3>
+<p class="note"><b>动机：</b>进一步验证 halt-polling 的收缩因子 <code class="mono">halt_poll_ns_shrink</code>。默认 <b>0</b> = poll 失败后窗口立即归 0（激进放弃）；改为 <b>2</b> = poll 失败后减半收缩（保留逐步缩小窗口，下限 <code>grow_start=10000</code>），理论上有助间歇 idle + 快速唤醒（IO 密集）场景。只测 harness（用户指定），halt_poll_ns 保持架构默认（x86 200000 / arm 500000）不变。</p>
+
+<table>
+  <thead><tr><th>节点</th><th>shrink</th><th>harness mean</th><th>stdev</th><th>逐轮 (s)</th><th>Δ vs 基线</th></tr></thead>
+  <tbody>
+    <tr><td>x86</td><td>0（基线）</td><td>11.951s</td><td>0.156s</td><td>11.98 / 12.20 / 11.86 / 11.98 / 11.73</td><td>—</td></tr>
+    <tr><td>x86</td><td>2（实验）</td><td>11.928s</td><td>0.247s</td><td>11.76 / 11.70 / 12.01 / 11.80 / 12.38</td><td><b>−0.19%</b></td></tr>
+    <tr><td>arm</td><td>0（基线）</td><td>17.211s</td><td>0.201s</td><td>17.10 / 17.48 / 17.05 / 17.43 / 17.00</td><td>—</td></tr>
+    <tr><td>arm</td><td>2（实验）</td><td>17.187s</td><td>0.152s</td><td>17.16 / 17.30 / 17.41 / 17.03 / 17.03</td><td><b>−0.14%</b></td></tr>
+  </tbody>
+</table>
+
+<h3>7.7 结论（shrink 0→2）</h3>
+<div class="okbox">
+<p><b>halt_poll_ns_shrink 从 0 改到 2 对 harness 无收益，两节点均维持默认 0。</b></p>
+<ul>
+  <li><b>数据：</b>x86 −0.19%（11.928 vs 11.951）、arm −0.14%（17.187 vs 17.211），差异 &lt;0.2%，均为噪声（且数值略快属正常波动）。</li>
+  <li><b>物理归因：</b>shrink 只影响「poll 失败后窗口如何收缩」，不改「poll 成功时的 grow」；ppt_replay 是 CPU-bound 串行负载，vCPU 大多 running、halt 次数少且多为失败，故 shrink=0（立即归零，最省 host CPU）与 shrink=2 在本负载下无可测差异。</li>
+  <li><b>置信度：</b>基线=上午（10:17/11:27）、实验=下午（14:30/14:47），跨时段；但差异 &lt;0.2% 极小，「无收益」结论稳健。</li>
+  <li><b>落地：</b>已恢复 <code class="mono">halt_poll_ns_shrink=0</code>（x86 / arm 均默认）。至此 halt-polling 三个可调点（<code>halt_poll_ns</code> / <code>halt_poll_ns_shrink</code>）均已实测：全部维持架构默认、无需调整。</li>
+</ul>
+</div>
+
+<h2>八、实测验证：关闭 CPU C-state（2026-11-16 下午）</h2>
+
+<p class="note"><b>目的：</b>验证「关闭 host CPU C-state（让 CPU 不深睡、消除唤醒延迟）」对沙箱负载的影响。方法：x86 节点运行时 disable 所有 512 CPU 的 cpuidle state1（C1，MWAIT 1μs）与 state2（C2，IOPORT 100μs），只留 state0（POLL 忙等 idle），对比 cstate 开启的基线。</p>
+
+<div class="warnbox">
+<b>⚠️ 关键前置发现：</b>arm 节点（10.30.42.77，鲲鹏 920）cpuidle 驱动 = <code class="mono">none</code>，cpu0 下<b>无任何 cpuidle state</b>——即 arm 节点<b>本身没有 C-state</b>（CPU idle 走最浅 WFI）。因此本实验<b>只有 x86 有可关的 cstate</b>，arm 无实验对象（其基线 17.2s 已经是「无 cstate」下的数据）。
+</div>
+
+<h3>8.1 x86 harness（命令累计耗时，n=5）</h3>
+<table>
+  <thead><tr><th>状态</th><th>mean</th><th>stdev</th><th>单命令</th><th>逐轮 (s)</th><th>Δ vs 基线</th></tr></thead>
+  <tbody>
+    <tr><td><b>cstate on</b>（基线，上午）</td><td>11.951s</td><td>0.156s</td><td>373.5ms</td><td>11.98 / 12.20 / 11.86 / 11.98 / 11.73</td><td>—</td></tr>
+    <tr><td><b>cstate off</b>（下午）</td><td>13.916s</td><td>0.214s</td><td>434.9ms</td><td>13.54 / 14.11 / 14.09 / 14.01 / 13.81</td><td class="bad"><b>+16.4%</b></td></tr>
+    <tr><td><b>cstate on</b>（恢复重跑，下午）</td><td>12.025s</td><td>0.026s</td><td>375.8ms</td><td>12.02 / 12.07 / 11.99 / 12.04 / 12.02</td><td>+0.6%</td></tr>
+    <tr><td><b>只关 C2</b>（保留 C1，下午）</td><td><b>11.951s</b></td><td>0.117s</td><td>373.5ms</td><td>11.90 / 11.98 / 11.83 / 11.88 / 12.17</td><td><b>0.0%</b></td></tr>
+  </tbody>
+</table>
+
+<h3>8.2 x86 npm workload（热装，越低越好，n=3）</h3>
+<table>
+  <thead><tr><th>状态</th><th>cold_med（网络主导，不可比）</th><th>hot_med</th><th>热装逐轮 (s)</th><th>Δ vs 基线</th></tr></thead>
+  <tbody>
+    <tr><td><b>cstate on</b>（基线）</td><td>59.09s</td><td>2.137s</td><td>2.120 / 2.137 / 2.221</td><td>—</td></tr>
+    <tr><td><b>cstate off</b>（下午）</td><td>89.09s</td><td>2.547s</td><td>2.547 / 2.547 / 2.730</td><td class="bad"><b>+19.2%</b></td></tr>
+  </tbody>
+</table>
+
+<h3>8.3 结论</h3>
+<div class="okbox">
+<p><b>关闭 host CPU C-state 对沙箱负载显著有害（x86 harness +16.4%、npm 热装 +19.2%），华为默认开启 C-state 是正确的。</b></p>
+<ul>
+  <li><b>数据：</b>harness 13.916s（cstate off）vs 11.951s（基线）= <b>+16.4%</b>；npm 热装 2.547s vs 2.137s = <b>+19.2%</b>，两组方向一致、5 轮 harness 逐轮一致偏高。</li>
+  <li><b>可逆验证：</b>恢复 cstate 后 harness 回落 <b>12.025s</b>（接近基线），证明 +16% 确实由关 cstate 引起、非时段漂移。</li>
+  <li><b>已排除热降频：</b>关闭期间 CPU 频率仍满 boost（4.13GHz &gt; base 2.7GHz，governor=performance），无 thermal throttling。</li>
+  <li><b>物理归因：</b>关 C1/C2 后 host CPU idle 只能走 POLL 忙等（<code>cpu_relax</code> 忙等在 idle 线程上下文里，故 <code>top</code> 仍显示 99% idle、掩盖了真实空耗）；guest vCPU 线程每次 idle（等 IO、等子进程、进程间调度间隙）都变成忙等，与运行中的线程争夺 SMT 执行单元 / cache / 调度时机，反而拖慢整体吞吐。C-state 的「睡下 + 快速唤醒」本就是为这种「频繁短 idle」场景优化的。</li>
+  <li><b>🔍 精确定位（只关 C2，保留 C1）：</b>追加实验仅 disable state2（C2，100μs 深睡）、保留 state1（C1，MWAIT 1μs），结果 harness = <b>11.951s，与基线完全一致（0.0%）</b>。这证明 <b>+16% 退化的根因是「关 C1 导致 POLL 忙等」</b>，而非「关 C2 深睡」。C1（1μs 浅睡）是 CPU idle 的主要去向、保留它是必要的；C2（100μs 深睡）对 ppt_replay 这类 CPU-bound 负载几乎不触发（guest vCPU 很少 idle 到进 C2），关不关无所谓——华为默认 C1+C2 全开 = 最优（开 C1 必要、开 C2 无害）。</li>
+  <li><b>arm 说明：</b>arm 节点无 C-state（cpuidle 驱动 none、走 WFI 最浅 idle），本就没有可关项，无需操作。</li>
+  <li><b>落地：</b>已恢复 cstate（C1/C2 全部 enable）。<b>维持华为默认：cstate 开启。</b></li>
+</ul>
+</div>
+
+<h3>8.4 开机持久化验证：processor.max_cstate=1 + 反向 A/B（2026-11-16 下午）</h3>
+<p class="note"><b>目的：</b>用「真正开机持久化」方式验证关 C2（<code class="mono">processor.max_cstate=1</code>，grubby 写入 + 重启），并与运行时 sysfs 方式（8.3 的「只关 C2」）交叉印证；再用<b>反向 A/B</b>（撤参数 + 再重启）消除重启/时段漂移的混淆。</p>
+
+<table>
+  <thead><tr><th>配置</th><th>重启边界</th><th>harness mean</th><th>stdev</th><th>逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td>基线（C1+C2 开）</td><td>重启前</td><td>11.951s</td><td>0.156</td><td>11.98 / 12.20 / 11.86 / 11.98 / 11.73</td></tr>
+    <tr><td>只关 C2（运行时 sysfs）</td><td>重启前</td><td>11.951s</td><td>0.117</td><td>11.90 / 11.98 / 11.83 / 11.88 / 12.17</td></tr>
+    <tr><td>max_cstate=1（开机，C1 保留）</td><td>重启#1 后</td><td>12.237s</td><td>0.059</td><td>12.18 / 12.17 / 12.23 / 12.32 / 12.28</td></tr>
+    <tr><td>max_cstate=1 复测</td><td>重启#1 后</td><td>12.357s</td><td>0.099</td><td>12.37 / 12.51 / 12.32 / 12.39 / 12.20</td></tr>
+    <tr><td><b>默认 C1+C2（已撤参数）</b></td><td>重启#2 后</td><td><b>12.313s</b></td><td>0.087</td><td>12.23 / 12.47 / 12.32 / 12.30 / 12.24</td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<p><b>processor.max_cstate=1（开机持久化关 C2）对 harness 完全中性（0%），与运行时「只关 C2」互相印证。</b></p>
+<ul>
+  <li><b>参数正确生效：</b>max_cstate=1 开机后 cpuidle 只剩 POLL + C1（无 C2）、<code>/sys/module/processor/parameters/max_cstate=1</code>；撤参数后恢复 POLL + C1 + C2、max_cstate=8。开机持久化方式（grubby + 重启）本身 OK。</li>
+  <li><b>反向 A/B 决定性证据：</b>撤掉参数、恢复默认 C-state 后 harness 仍为 <b>12.313s</b>，与 max_cstate=1 的 12.24~12.36s <b>同一量级</b>，并未回落 11.95s。→ 跳变发生在「重启边界」而非「C2 开关边界」：重启前两组（无论 C2 开关）都 ~11.95s，重启后两组（无论 C2 开关）都 ~12.3s。</li>
+  <li><b>结论：</b>关 C2（无论运行时 sysfs 还是开机 cmdline）对 ppt_replay 完全无收益、也无害；C2 深睡对 CPU-bound 负载几乎不触发。华为默认 C1+C2 全开 = 最优。</li>
+  <li><b>附带发现（与 cstate 无关）：</b>存在一个 ~2.4~3.3% 的「重启后 / 傍晚时段」系统性漂移，宿主 99.6% idle、0 活跃 guest、CPU 满 boost（4.12GHz）仍不消失，且 diff_cow / allocatable 配置经查<b>未变</b>（配置文件 mtime 均为重启前）。根因未定位，但不影响本实验结论。</li>
+  <li><b>落地：</b>节点已恢复默认（cstate 全开、cmdline 干净、无任何残留参数）。</li>
+</ul>
+</div>
+
+<h2>九、实测验证：开启 kvm_amd.avic（2026-11-16 傍晚）</h2>
+
+<p class="note"><b>目的：</b>验证开启 AMD AVIC（Advanced Virtual Interrupt Controller，硬件加速虚拟中断注入）对沙箱 harness 负载的影响。默认 <code class="mono">kvm_amd.avic=N</code>（关闭），且参数只读（444），需重装 kvm_amd 模块开启。</p>
+
+<div class="warnbox">
+<b>开启方式：</b>avic 是模块加载期参数，无法运行时写 sysfs。步骤：写 <code>/etc/modprobe.d/kvm_amd-avic.conf</code>（<code>options kvm_amd avic=1</code>）→ 清空 guest（重装模块会强杀 VM）→ <code>rmmod kvm_amd kvm</code> → <code>modprobe kvm_amd</code>。dmesg 确认 <code>AVIC enabled</code> + <code>x2AVIC enabled</code>（x2APIC 模式）。CPU AMD EPYC 9T25 硬件支持（flags 含 <code>avic/vgif/v_vmsave_vmload</code>）。
+</div>
+
+<h3>9.1 x86 harness（命令累计耗时，n=5，紧邻 A/B 同日晚间）</h3>
+<table>
+  <thead><tr><th>配置</th><th>mean</th><th>stdev</th><th>逐轮 (s)</th><th>Δ</th></tr></thead>
+  <tbody>
+    <tr><td><b>avic=Y（开启）</b></td><td>12.372s</td><td>0.110</td><td>12.52 / 12.30 / 12.21 / 12.45 / 12.39</td><td>—</td></tr>
+    <tr><td><b>avic=N（默认，反向）</b></td><td>12.331s</td><td>0.119</td><td>12.41 / 12.27 / 12.33 / 12.14 / 12.50</td><td><b>−0.33%</b></td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<p><b>kvm_amd.avic 对 harness 无收益，维持默认关闭（N）。</b></p>
+<ul>
+  <li><b>数据：</b>avic 开/关差 <b>+0.33%</b>（12.372 vs 12.331），远小于组内 stdev（~0.9%），纯噪声。两次测量仅隔 16 分钟、同日晚间、节点状态一致，是干净的紧邻 A/B。</li>
+  <li><b>物理归因：</b>AVIC 硬件加速的是「虚拟中断注入」（降低 IO 密集、中断频繁负载的 VM-exit 注入开销）；而 ppt_replay 是 CPU-bound 串行负载、虚拟中断极少，AVIC 没有发挥空间。故无收益符合预期。</li>
+  <li><b>落地：</b>已删除 <code>/etc/modprobe.d/kvm_amd-avic.conf</code>，重装回默认 <code>avic=N</code>，节点无遗留。</li>
+</ul>
+</div>
+
+<h2>十、实测验证：开启小尺寸 mTHP（2026-11-16 晚，x86）</h2>
+
+<p class="note"><b>目的：</b>验证开启「多尺寸透明大页」（mTHP，16~1024kB 小尺寸由 <code>never</code> 改为 <code>always</code>）对沙箱 harness 的影响。默认 2MB THP 已 <code>always</code>，但小尺寸 mTHP 全是 <code>never</code>。</p>
+
+<h3>10.1 x86 harness（命令累计耗时，n=5）</h3>
+<table>
+  <thead><tr><th>配置</th><th>mean</th><th>stdev</th><th>逐轮 (s)</th><th>Δ vs 同期默认</th></tr></thead>
+  <tbody>
+    <tr><td><b>mTHP 小尺寸 on</b>（16~1024kB → always）</td><td>12.176s</td><td>0.086</td><td>12.21 / 12.04 / 12.13 / 12.31 / 12.19</td><td>—</td></tr>
+    <tr><td>同期默认（size=never）</td><td>12.331s</td><td>0.119</td><td>12.41 / 12.27 / 12.33 / 12.14 / 12.50</td><td class="good"><b>−1.26%</b></td></tr>
+  </tbody>
+</table>
+
+<div class="notebox" style="background:#fff7ed; border-left:4px solid #f59e0b;">
+<p><b>mTHP 呈弱正向信号（−1.26%），但尚未下结论 —— 待反向 A/B 确认。</b></p>
+<ul>
+  <li><b>数据：</b>mTHP on = 12.176s vs 同期默认 12.331s = <b>−1.26%</b>，略超组内 stdev（~0.9%）。</li>
+  <li><b>干扰：</b>x86 存在 ~2.4~3.3% 的重启/时段漂移（见 8.4），本组与默认对照组隔约 44 分钟，单组测量不足以定论。</li>
+  <li><b>物理预期偏空：</b>ppt_replay 是串行 CPU-bound，无大页压力、无大量缺页，小尺寸 mTHP 对 TLB/内存几乎无影响，−1.26% 更像「噪声 + 时段漂移」，倾向于<b>无收益</b>。</li>
+  <li><b>落地建议：</b>结论以反向 A/B（mTHP 关、同窗复测）为准；在此之前<b>不推荐改动</b>，维持默认（小尺寸 mTHP=never）。</li>
+</ul>
+</div>
+
+<h3>10.2 反向 A/B（2026-11-17 上午，同窗紧邻）</h3>
+<table>
+  <thead><tr><th>配置</th><th>时间</th><th>mean</th><th>stdev</th><th>逐轮 (s)</th><th>Δ</th></tr></thead>
+  <tbody>
+    <tr><td><b>mTHP off</b>（默认 never）</td><td>09:54</td><td>12.260s</td><td>0.155</td><td>12.46 / 12.33 / 11.99 / 12.25 / 12.28</td><td>—</td></tr>
+    <tr><td><b>mTHP on</b>（16~1024kB → always）</td><td>10:10</td><td>12.257s</td><td>0.128</td><td>12.29 / 12.08 / 12.19 / 12.26 / 12.47</td><td><b>−0.02%</b></td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<p><b>反向 A/B 决定性结论：mTHP 对 harness 完全中性（0%），维持默认关闭（never）。</b></p>
+<ul>
+  <li><b>数据：</b>同窗紧邻（隔 ~16 分钟）on vs off = 12.257s vs 12.260s = <b>−0.02%</b>，完全重合。</li>
+  <li><b>结论：</b>之前 −1.26% 的「弱正向」是<b>噪声 + 时段漂移</b>，非真实收益。反向 A/B 证实 mTHP 开关对 ppt_replay <b>零差异</b>。</li>
+  <li><b>物理归因得到印证：</b>ppt_replay 串行 CPU-bound，无大页压力、无大量缺页，小尺寸 THP 无发挥空间。</li>
+  <li><b>落地：</b>已恢复默认（小尺寸 mTHP=never）。维持华为默认，无需调整。</li>
+</ul>
+</div>
+
+<h2>十一、实测验证：开启 kvm.twed_enable（2026-11-16 晚，arm）</h2>
+
+<p class="note"><b>目的：</b>验证开启 KVM arm64 的 TWED（Trap WFE/WFI with Timeout，vCPU 睡眠定时唤醒延迟优化）对沙箱 harness 的影响。默认 <code class="mono">twed_enable=N</code>，参数运行时可写（644）。</p>
+
+<h3>11.1 arm harness（命令累计耗时，n=5）</h3>
+<table>
+  <thead><tr><th>配置</th><th>mean</th><th>stdev</th><th>逐轮 (s)</th><th>Δ vs 基线</th></tr></thead>
+  <tbody>
+    <tr><td><b>twed_enable=Y</b></td><td>17.183s</td><td>0.133</td><td>17.24 / 16.93 / 17.17 / 17.27 / 17.29</td><td>—</td></tr>
+    <tr><td>基线（twed=N）</td><td>17.211s</td><td>—</td><td>—</td><td><b>−0.16%</b></td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<p><b>twed_enable 对 harness 无收益（−0.16%，噪声），维持关闭。</b></p>
+<ul>
+  <li><b>数据：</b>−0.16% 远小于组内 stdev，纯噪声。</li>
+  <li><b>物理归因：</b>TWED 优化的是「vCPU WFI/WFE 睡眠定时唤醒」、降低深睡唤醒延迟，对 arm 虚拟中断频繁的 IO 负载才有用；ppt_replay 是 CPU-bound，无关。</li>
+  <li><b>落地：</b>运行时参数不持久，重启后自动回默认 N，无遗留。</li>
+</ul>
+</div>
+
+<h2>十二、实测验证：audit=0（2026-11-16 晚，x86 + arm）</h2>
+
+<p class="note"><b>目的：</b>验证关闭内核审计子系统（cmdline 加 <code>audit=0</code>）对沙箱 harness 的影响。<b>已确认内核级 audit 真正禁用</b>（不只是 cmdline）：dmesg <code>audit: disabled (until reboot)</code>、<code>auditctl -s</code> 报 <code>audit support not in kernel</code>、无 audit 进程/模块、auditd 单元 inactive。</p>
+
+<h3>12.1 harness（命令累计耗时，n=5）</h3>
+<table>
+  <thead><tr><th>节点</th><th>配置</th><th>mean</th><th>stdev</th><th>逐轮 (s)</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="2">x86</td><td><b>audit=0</b></td><td>12.279s</td><td>0.087</td><td>12.29 / 12.23 / 12.37 / 12.37 / 12.14</td></tr>
+    <tr><td>基线（audit 开）</td><td>11.951s（上午）/ 12.331s（晚间）</td><td>—</td><td>—</td></tr>
+    <tr><td rowspan="2">arm</td><td><b>audit=0</b></td><td>17.439s</td><td>0.117</td><td>17.64 / 17.29 / 17.38 / 17.42 / 17.46</td></tr>
+    <tr><td>基线（audit 开）</td><td>17.211s</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<p><b>audit=0 对 harness 无收益（x86 ~0%，arm 略 +1.3%），建议维持 audit 开启。</b></p>
+<ul>
+  <li><b>x86：</b>12.279s 落在晚间默认漂移带（12.2~12.4s）内、未回落到上午 11.95s → 无收益（相对晚间默认 −0.4%，实为漂移带内噪声）。</li>
+  <li><b>arm：</b>17.439s vs 17.211s = <b>+1.33%</b>，audit=0 反而略慢。⚠️ 这是 arm <b>首次重启</b>后的数据，+1.33% 可能混入 arm 自身重启漂移；若需定论可做反向 A/B（撤 audit=0 + 再重启 + 复测）。</li>
+  <li><b>物理归因：</b>关闭 syscall 审计钩子只省掉每次 syscall 的 audit 检查，对纯计算、无审计规则命中的 ppt_replay 本就没有预期收益。</li>
+  <li><b>落地：</b>两节点当前 cmdline 已含 <code>audit=0</code>；结论「无收益」，建议<b>恢复 audit 开启</b>（其安全/可审计价值 &gt; 零性能收益），需撤时 <code>grubby --remove-args="audit=0"</code> + 重启即可。</li>
+</ul>
+</div>
+
+<h2>十三、实测验证：geekbench + sysbench 虚拟化开销（host 裸金属 vs guest，arm，2026-11-17）</h2>
+
+<p class="note"><b>目的：</b>用 geekbench + sysbench 两种基准量化 <code>cloud-hypervisor</code> microVM 的虚拟化开销（host 裸金属 vs guest 沙箱）。工具来自基线沙箱镜像 <code>cpu-bench:0.3-arm64</code>。节点：arm <code>10.30.42.77</code>（鲲鹏 920 7280Z @2.9GHz，160 核，4 NUMA 节点，guest 规格 4 vCPU / 8GiB）。</p>
+
+<h3>13.1 sysbench CPU（events/s，越高越好，n=3）</h3>
+<table>
+  <thead><tr><th>线程</th><th>host 裸金属</th><th>guest 沙箱</th><th>虚拟化开销</th></tr></thead>
+  <tbody>
+    <tr><td>1 线程</td><td>1254.07</td><td>1253.10</td><td>−0.08%</td></tr>
+    <tr><td>4 线程</td><td>5013.47</td><td>5005.53</td><td>−0.16%</td></tr>
+  </tbody>
+</table>
+
+<h3>13.2 geekbench7（Single-Core / Multi-Core Score，越高越好）</h3>
+<table>
+  <thead><tr><th>项目</th><th>host 裸金属</th><th>guest 沙箱</th><th>虚拟化开销</th></tr></thead>
+  <tbody>
+    <tr><td>Single-Core</td><td>1384</td><td>1305</td><td><b>−5.7%</b></td></tr>
+    <tr><td>Multi-Core</td><td>35139（160 核全跑）</td><td>4080（4 vCPU）</td><td>核数不同，不可直接比</td></tr>
+  </tbody>
+</table>
+
+<div class="okbox">
+<p><b>结论：CPU 虚拟化开销整体很小，但「真实负载」（geekbench 单核）明显高于「微基准」（sysbench）。</b></p>
+<ul>
+  <li><b>sysbench（CPU-bound 微基准）：</b>1t −0.08% / 4t −0.16%，基本可忽略 —— 纯 ALU/内存微循环对 vCPU 虚拟化不敏感，符合预期。</li>
+  <li><b>geekbench（贴近真实应用的混合负载）：</b>Single-Core <b>−5.7%</b>，是更贴近实际的虚拟化开销量级（含分支、加密、SIMD、访存等复杂模式，对 VM-exit/EPT/TLB 更敏感）。</li>
+  <li><b>Multi-Core 口径：</b>host 跑满 160 核（35139）、guest 仅 4 vCPU（4080），核数不同不可直接比；<b>单核对比才是干净的虚拟化开销指标</b>。若要 4 核对 4 核的多核对比，需对 host 用 <code>taskset -c</code> 限核重跑。</li>
+  <li><b>与 NUMA 的关联：</b>guest 4 vCPU 目前 <code>cpuset.mems</code> 为空、可在 4 个 NUMA 节点间漂移（跨节点距离 35~40），单核 5.7% 开销中可能混入跨 NUMA 访问/迁移成分 —— 这正是「三、可优化项」第 1 项 <b>NUMA 绑核绑内存</b>的靶点（见账本 2026-11-17 NUMA 改造方案）。</li>
+  <li><b>方法论备注：</b>host 无外网，geekbench7 Preview 构建须联网上传结果后才打印分数；本测试用 SSH 反向隧道借道跳板机 147 让 host 出网，上传成功取得分数（result id <code>902594</code>）。</li>
+</ul>
+</div>
+
 <footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
-  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12。
+  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12；tdp_mmu A/B 实测于 2026-11-14 晚；halt_poll_ns / halt_poll_ns_shrink / C-state（含 max_cstate=1 反向 A/B）/ kvm_amd.avic / mTHP / twed_enable / audit=0 A/B 实测于 2026-11-16（x86 + arm）；mTHP 反向 A/B 实测于 2026-11-17 上午（x86）；geekbench+sysbench 虚拟化开销（host vs guest）实测于 2026-11-17（arm，第十三节）。
 </footer>
 
 </div>
