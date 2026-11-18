@@ -71,7 +71,7 @@
 
 <header>
   <h1>华为 Gray 沙箱 · 宿主机(Host OS)优化项分析</h1>
-  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优<br>更新：2026-11-14 晚，第 4 项 tdp_mmu 已完成 A/B 实测（见第六节）；2026-11-16 新增 halt_poll_ns / halt_poll_ns_shrink（第七节）与 C-state 关闭（第八节）A/B 实测</div>
+  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优<br>更新：2026-11-14 晚，第 4 项 tdp_mmu 已完成 A/B 实测（见第六节）；2026-11-16 新增 halt_poll_ns / halt_poll_ns_shrink（第七节）与 C-state 关闭（第八节）A/B 实测；2026-11-18 第 1 项 NUMA 绑核绑内存完成 bound/unbound 紧邻 A/B 实测（见第十四节）</div>
 </header>
 
 <h2>一、一句话结论</h2>
@@ -107,6 +107,7 @@
 <p><b>作用：</b>4 核 guest 在 NUMA 距离 32（x86）/ 40（arm）的节点间跳来跳去，导致 ① 远端内存访问延迟 2~3×；② vCPU 迁移丢失 cache/TLB；③ 调度抖动。这<b>正是此前 arm harness 逐轮 std 高达 3.5~4.3%「宿主漂移」的头号嫌疑</b>。</p>
 <p><b>优化方向：</b>每个沙箱的 <code>cpuset.cpus</code> 固定到<b>单节点内的一段核</b>、<code>cpuset.mems</code> 绑定<b>同一节点</b>；或 cloud-hypervisor 启动用 <code>--cpus</code> 配合 <code>numactl --membind</code>。</p>
 <p class="kvline"><b>预期/风险：</b>显著压方差，mean 或小幅下降；需改 conductor 的 cpuset 分配逻辑，属于工程改造。</p>
+<p class="note"><b>✅ 落地进展（2026-11-17，arm 10.30.42.77，纯配置路线，不改源码）：</b>已用 systemd drop-in 落地并<b>实测生效</b> —— 写 <code class="mono">/etc/systemd/system/sandbox-runner@.service.d/10-numa-node0.conf</code>（<code class="mono">[Service] AllowedCPUs=8-39 / AllowedMemoryNodes=0</code>）→ <code class="mono">systemctl daemon-reload</code> → <code class="mono">systemctl stop "sandbox-runner@*"</code> 触发 conductor 重建 runner 池（预热单元不重建不吃 drop-in）。重建后 runner 单元 <code class="mono">cpuset.cpus=8-39 / mems=0</code>；新建沙箱的 cloud-hypervisor vmm 进程实测 <code class="mono">Cpus_allowed_list=8-39 / Mems_allowed_list=0</code>（精确绑<b>同一 node0</b>，自动排除保留核 0-7）。<br><b>要点/边界：</b>① 部署版 conductor(=v0.1.x, 内部 commit <code class="mono">5867c3b5</code>) 的 conductor.yaml <b>无</b> <code class="mono">resource_listen.pools</code>/<code class="mono">units.runner_pools</code>（那是未公开 v0.2.0 特性），故当前是「单节点 node0 演示」，<b>4 节点轮转需升级或改源码</b>；② 回滚 = <code class="mono">rm</code> 该 drop-in + <code class="mono">daemon-reload</code>（可逆）；③ harness/workload 前后对比测量：<b>原生 harness 已恢复</b>，2026-11-18 完成 bound/unbound 紧邻 A/B 实测（官方方式 <code class="mono">CPUAffinity</code> + <code class="mono">NUMAPolicy=bind</code> + <code class="mono">NUMAMask=0</code>）：<b>arm 绑快 −2.4% / x86 绑快 −3.5%</b>，详见第十四节。</p>
 </div>
 
 <div class="item">
@@ -209,7 +210,7 @@
 
 <h2>五、落地建议与验证思路</h2>
 <ol>
-  <li><b>先做 NUMA 绑核绑内存</b>（第 1 项）：改动集中在 conductor 的 cpuset 分配，收益目标是把 arm/x86 harness 逐轮方差压下来。</li>
+  <li><b>先做 NUMA 绑核绑内存</b>（第 1 项）：<b>已在 arm 77 用纯配置路线（systemd drop-in）落地并验证</b>（详见第 1 项「落地进展」）；收益目标是把 arm/x86 harness 逐轮方差压下来。4 节点轮转的正式方案需 conductor 升级到 v0.2.0 或改源码，当前为 node0 单节点演示。</li>
   <li><b>再调 halt_poll_ns + tdp_mmu</b>（第 2、4 项）：低风险、可在线改，改完用同一套 ppt_replay harness（读 <code>sum_ns</code>）与 npm 热装做 A/B 对照，量化 vmexit/唤醒路径收益。</li>
   <li><b>AVIC（第 5 项）单独灰度</b>：因兼容性风险，先在一台验证节点开 <code class="mono">avic=1</code> 跑稳定性 + 基准，再决定是否推广。</li>
   <li><b>isolcpus/nohz_full（第 3 项）作为中期改造</b>：与绑核一起做，才能兑现「去 jitter」的完整收益；宿主 <code class="mono">CONFIG_NO_HZ_FULL=y</code> 已编译，改 cmdline 即可。</li>
@@ -555,8 +556,40 @@
 </ul>
 </div>
 
+<h2>十四、实测验证：NUMA 绑核绑内存 A/B（原生 harness，官方方式，2026-11-18）</h2>
+
+<p class="note"><b>目的：</b>量化「三、可优化项」第 1 项<b> NUMA 绑核绑内存</b>对<b>原生 ppt_replay harness</b>（32 命令回放，读 <code>sum_ns</code>）的影响。方法：<b>官方 issue #514 方式</b>——宿主侧进程级 <code class="mono">CPUAffinity</code> + <code class="mono">NUMAPolicy=bind</code> + <code class="mono">NUMAMask</code>（systemd drop-in）；<b>unbound</b> = 无 drop-in；<b>bound</b> = node0（arm <code class="mono">8-39</code> / x86 <code class="mono">8-127,256-383</code>，<code class="mono">NUMAMask=0</code>）与 <b>node1</b>（arm <code class="mono">40-79</code> / x86 <code class="mono">128-255,384-511</code>，<code class="mono">NUMAMask=1</code>）。<b>每架构 unbound/bound 紧邻 A/B</b>（中间仅隔绑核操作 ~1min，消除跨时段漂移），n=5 取中位数，测完解绑回 unbound。</p>
+
+<h3>14.1 harness 结果（命令累计耗时，越低越好）</h3>
+<table>
+  <thead><tr><th>架构</th><th>组</th><th>unbound 中位数</th><th>bound 中位数</th><th>Δ（绑快）</th><th>逐轮 unbound (s)</th><th>逐轮 bound (s)</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="3">arm</td><td>第1组（跨时段）</td><td>18.381s</td><td>17.238s</td><td><b>−6.2%</b></td><td>17.80/18.21/18.38/18.71/18.74</td><td>17.13/17.18/17.24/17.49/17.52</td></tr>
+    <tr><td>第2组（紧邻·node0）</td><td>17.779s</td><td>17.354s</td><td><b>−2.4%</b></td><td>17.46/17.64/17.78/17.82/19.98*</td><td>17.23/17.28/17.35/17.46/17.59</td></tr>
+    <tr><td>第3组（紧邻·node1）</td><td>18.062s</td><td>17.538s</td><td><b>−2.9%</b></td><td>17.85/18.02/18.06/18.87/19.18</td><td>17.20/17.38/17.54/17.54/17.70</td></tr>
+    <tr><td rowspan="3">x86</td><td>第1组（跨时段）</td><td>12.101s</td><td>11.680s</td><td><b>−3.5%</b></td><td>12.00/12.03/12.10/12.19/12.25</td><td>11.62/11.64/11.68/11.71/11.76</td></tr>
+    <tr><td>第2组（紧邻·node0）</td><td>12.074s</td><td>11.653s</td><td><b>−3.5%</b></td><td>11.73/11.93/12.07/12.12/12.15</td><td>11.60/11.64/11.65/11.69/11.71</td></tr>
+    <tr><td>第3组（紧邻·node1）</td><td>12.002s</td><td>11.719s</td><td><b>−2.4%</b></td><td>11.79/11.98/12.00/12.06/12.12</td><td>11.61/11.70/11.72/11.73/11.82</td></tr>
+    <tr><td>arm 合并</td><td>n=10（node0）</td><td><b>18.012s</b></td><td><b>17.317s</b></td><td><b>−3.9%</b></td><td colspan="2">—</td></tr>
+    <tr><td>x86 合并</td><td>n=10（node0）</td><td><b>12.088s</b></td><td><b>11.667s</b></td><td><b>−3.5%</b></td><td colspan="2">—</td></tr>
+  </tbody>
+</table>
+<p class="kvline">* arm 第2组 unbound 第5轮 19.98s 为 outlier（疑似残留旧沙箱干扰），中位数不受影响。绑核生效均已 host 侧验证：bound 组 <code>Cpus_allowed_list</code> = 对应节点核集 + numa_maps <code>bind:N</code> 标记 + 内存页全落绑定节点（node0→<code>bind:0</code>/N0，node1→<code>bind:1</code>/N1，arm node1=40661 页、x86 node1=37667 页）。</p>
+
+<h3>14.2 结论</h3>
+<div class="okbox">
+<p><b>原生 ppt_replay harness（CPU/IO 型编排负载）绑 NUMA 两架构都快：arm −2.4~−2.9% / x86 −2.4~−3.5%（紧邻 A/B 口径）。</b></p>
+<ul>
+  <li><b>数据：</b>紧邻 A/B node0 第2组 arm 17.779s→17.354s（−2.4%）、x86 12.074s→11.653s（−3.5%）；合并两组 n=10 后 arm 18.012s→17.317s（−3.9%）、x86 12.088s→11.667s（−3.5%）。</li>
+  <li><b>node0 vs node1（绑哪个节点都一样快）：</b>第3组绑 node1 紧邻 A/B —— arm 18.062s→17.538s（−2.9%）、x86 12.002s→11.719s（−2.4%），与 node0 收益（arm −2.4% / x86 −3.5%）在噪声内相当。<b>结论：绑核收益来自「CPU 与内存落在同一 NUMA 节点」，与具体绑 node0 还是 node1 无关</b>——绑 node1 时 vmm 内存页全落 N1（arm 40661 / x86 37667），不再跨节点取数。</li>
+  <li><b>时段漂移验证（方法论关键）：</b>arm unbound 第1组 18.381s → 第2组 17.779s，<b>同配置漂移 −3.3%</b>；第1组 arm −6.2% 被漂移放大（其 unbound 时段 12:02 比 bound 时段 12:50 慢），<b>紧邻 A/B 的 −2.4% 才是真实绑核收益</b>。x86 两组恒 −3.5%，时段漂移小、结论稳健。</li>
+  <li><b>与 workload 方向差异（负载类型决定收益）：</b>workload 的 <code>memory_s</code>（内存带宽型）在 arm 绑 node0 反而<b>慢 −11.8%</b>、x86 快 +5.2%；而 harness（CPU/IO 型）两架构都受益。<b>CPU/IO 型绑单节点减少跨节点缓存/TLB/内存访问；内存带宽型在 4-NUMA arm 上绑单节点反而损失带宽</b>。</li>
+  <li><b>落地：</b>测后两节点已解绑回 unbound（沿用「保持 unbound」决定）；正式多节点轮转需 conductor 升级 v0.2.0 或改源码（见第三节第 1 项边界②）。</li>
+</ul>
+</div>
+
 <footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
-  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12；tdp_mmu A/B 实测于 2026-11-14 晚；halt_poll_ns / halt_poll_ns_shrink / C-state（含 max_cstate=1 反向 A/B）/ kvm_amd.avic / mTHP / twed_enable / audit=0 A/B 实测于 2026-11-16（x86 + arm）；mTHP 反向 A/B 实测于 2026-11-17 上午（x86）；geekbench+sysbench 虚拟化开销（host vs guest）实测于 2026-11-17（arm，第十三节）。
+  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12；tdp_mmu A/B 实测于 2026-11-14 晚；halt_poll_ns / halt_poll_ns_shrink / C-state（含 max_cstate=1 反向 A/B）/ kvm_amd.avic / mTHP / twed_enable / audit=0 A/B 实测于 2026-11-16（x86 + arm）；mTHP 反向 A/B 实测于 2026-11-17 上午（x86）；geekbench+sysbench 虚拟化开销（host vs guest）实测于 2026-11-17（arm，第十三节）；NUMA 绑核绑内存 bound/unbound A/B（原生 harness，官方方式）实测于 2026-11-18（x86 + arm，第十四节）。
 </footer>
 
 </div>
