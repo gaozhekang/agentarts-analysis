@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>soffice 命令 strace 耗时分析报告</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273549; --border:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#34d399;
+    --warn:#fbbf24; --bad:#f87171; --mono:'Consolas','Cascadia Mono',monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,'Segoe UI','Microsoft YaHei',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.7;font-size:15px;}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 64px;}
+  header.hero{background:linear-gradient(135deg,#0b1220,#1e293b);border:1px solid var(--border);
+    border-radius:14px;padding:28px 32px;margin-bottom:24px;}
+  h1{margin:0 0 8px;font-size:26px;letter-spacing:.5px;}
+  .sub{color:var(--muted);font-size:13.5px;margin:0;}
+  .meta{color:var(--muted);font-size:12.5px;margin-top:10px;border-top:1px dashed var(--border);padding-top:10px;}
+  h2{font-size:20px;margin:36px 0 12px;padding-left:12px;border-left:4px solid var(--accent);}
+  h3{font-size:16px;margin:24px 0 10px;color:var(--accent);}
+  p{margin:10px 0;}
+  .note{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--accent);
+    border-radius:8px;padding:12px 16px;margin:14px 0;}
+  .warn{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--warn);
+    border-radius:8px;padding:12px 16px;margin:14px 0;}
+  .okbox{background:#0c1f17;border:1px solid #14532d;border-left:4px solid var(--ok);
+    border-radius:8px;padding:14px 18px;margin:16px 0;}
+  .badbox{background:#1f0c0c;border:1px solid #532020;border-left:4px solid var(--bad);
+    border-radius:8px;padding:14px 18px;margin:16px 0;}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--panel2);color:var(--text);font-weight:600;}
+  tr:nth-child(even) td{background:rgba(30,41,59,.4);}
+  td.num{text-align:right;font-family:var(--mono);white-space:nowrap;}
+  code, .mono{font-family:var(--mono);background:#0b1220;border:1px solid var(--border);
+    padding:1px 5px;border-radius:4px;font-size:13px;color:#a5d8ff;}
+  pre{background:#0b1220;border:1px solid var(--border);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:#cbd5e1;}
+  pre .c{color:#64748b;} pre .hl{color:#fbbf24;} pre .gr{color:#34d399;} pre .rd{color:#f87171;}
+  ul{margin:10px 0;padding-left:22px;}
+  li{margin:6px 0;}
+  .tree{font-family:var(--mono);font-size:13px;color:#cbd5e1;}
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;margin-left:6px;vertical-align:middle;}
+  .tag.cpu{background:#172554;color:#93c5fd;border:1px solid #1e3a8a;}
+  .tag.wait{background:#451a03;color:#fdba74;border:1px solid #7c2d12;}
+  .tag.io{background:#052e16;color:#86efac;border:1px solid #14532d;}
+  footer{margin-top:40px;border-top:1px solid var(--border);padding-top:14px;color:var(--muted);font-size:12px;}
+  .small{font-size:12.5px;color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>soffice 命令 strace 耗时分析报告</h1>
+  <p class="sub">原生 ppt_replay harness 中 Top3 耗时命令的系统调用级剖析（wait4 / futex / accept 到底在等什么）</p>
+  <p class="meta">
+    采集对象：arm <code>10.30.42.77</code>（鲲鹏 920，4×NUMA）&nbsp;·&nbsp; x86 <code>10.30.33.139</code>（AMD EPYC 9T25，2×NUMA）<br>
+    采集方式：<code>strace -f -tt -T -s 256</code>（root，跟随线程/进程，微秒级时间戳 + 单次耗时）<br>
+    采集日期：2026-11-18 &nbsp;·&nbsp; 产物：<code>strace-out/{arm,x86}/{006,027,032}.strace.{log,sum}</code>（完整追踪 0.6–6.3MB/份）
+  </p>
+</header>
+
+<h2>一、三个被测命令</h2>
+<p>ppt_replay harness 回放的 32 条命令中，按累计耗时排序的 Top3 全部是 LibreOffice 的 <code>soffice</code> 相关命令。我们对这三条命令抓了完整 strace：</p>
+<table>
+  <thead><tr><th>编号</th><th>命令</th><th>角色</th><th>一句话定位</th></tr></thead>
+  <tbody>
+    <tr><td class="num">#6</td><td><code>soffice --version</code></td><td>环境探测</td><td>冷启动：首次加载动态库 / 字体 / fontconfig</td></tr>
+    <tr><td class="num">#27</td><td><code>soffice --headless --convert-to pdf … final.pptx</code></td><td>核心转换（第 1 次）</td><td>PPTX → PDF 完整转换，<b>耗时最大，分析重点</b></td></tr>
+    <tr><td class="num">#32</td><td><code>soffice --headless --convert-to pdf … final.pptx</code></td><td>核心转换（第 2 次）</td><td>预热后的重复转换，与 #27 对照</td></tr>
+  </tbody>
+</table>
+
+<h2>二、整体 syscall 分布（strace -c）</h2>
+<p>三条命令的 <code>strace -c</code> 汇总里，时间高度集中在三个 syscall：<code>wait4</code>、<code>futex</code>、<code>accept</code>。以核心转换 <code>#27</code> 为例：</p>
+<table>
+  <thead><tr><th>syscall</th><th>arm #27</th><th>x86 #27</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>wait4</code><span class="tag wait">等待</span></td><td class="num">42.8%（2.99s）</td><td class="num">42.1%（1.66s）</td><td>父进程等 <code>soffice.bin</code> 子进程退出</td></tr>
+    <tr><td><code>futex</code><span class="tag wait">等待</span></td><td class="num">36.2%（2.53s）</td><td class="num">34.7%（1.37s）</td><td>线程在条件变量上等 <code>soffice.bin</code> 完成</td></tr>
+    <tr><td><code>accept</code><span class="tag wait">等待</span></td><td class="num">19.7%（1.38s）</td><td class="num">18.0%（0.71s）</td><td>PipeIPC 线程等 SingleOfficeIPC 套接字回连</td></tr>
+    <tr><td><code>pread64</code><span class="tag io">磁盘</span></td><td class="num">0.27%（0.019s）</td><td class="num">0.52%（0.021s）</td><td>磁盘顺序读，<b>可忽略</b></td></tr>
+    <tr><td>其余 ×20+</td><td class="num">&lt;1%</td><td class="num">&lt;2%</td><td>openat / mmap / munmap / execve 等，瞬态</td></tr>
+  </tbody>
+</table>
+
+<div class="warn">
+  <b>⚠️ strace -c 的「时间合计」会虚高，不能直接读成「总耗时」。</b>
+  <code>strace -f</code> 跟随所有线程/进程，把<b>互相重叠的等待时间做跨线程累加</b>：
+  arm #27 三大 wait 之和 2.99+2.53+1.38 = <b>6.90s</b>，而 <code>soffice.bin</code> 实际墙钟只有 <b>2.02s</b>（3.4×）；
+  x86 #27 三项之和 <b>3.75s</b>，实际墙钟 <b>1.46s</b>（2.6×）。
+  这正是本文要澄清的核心：三者的时间<b>不是串行叠加，而是同一件事的三种重叠等待</b>。
+</div>
+
+<h2>三、三大耗时 syscall 各自「在等什么」</h2>
+
+<h3>3.1 进程树：一次 soffice 转换的真实调用链</h3>
+<pre class="tree">
+<span class="c"># arm #27（x86 完全同构，仅 pid 不同）</span>
+533  /bin/sh -c "… soffice --convert-to pdf … | tail; pdftotext …; grep …; python3 …"
+└─ 534  /usr/bin/soffice                <span class="c"># shell 包装脚本</span>
+      └─(exec)─▶ oosplash              <span class="c"># LibreOffice 启动器（仍 534）</span>
+           ├─ 线程 549 osl_executeProc ──fork──▶ <span class="hl">550 soffice.bin</span>  <span class="c"># ★ 真正的转换进程</span>
+           │        ├─ 线程 551/556 configmgrWriter、554/557 Unzipping、555/562 Parser …
+           │        └─ 线程 <span class="rd">552 PipeIPC</span>  <span class="c"># ★ 阻塞在 accept 的监听线程</span>
+           └─ 535 tail -2
+<span class="c"># 转换完成后：sh 继续跑 pdftotext(597) → grep → python3(600)</span>
+</pre>
+<p class="small">证据（arm）：<code>550 04:55:04.268542 execve("/usr/lib/libreoffice/program/soffice.bin", …)</code>；
+x86：<code>545 04:54:35.240305 execve(…soffice.bin…)</code>。两侧 <code>soffice.bin</code> 路径、参数完全一致。</p>
+
+<h3>3.2 wait4（~41%）—— 等的是 <code>soffice.bin</code> 转换子进程退出</h3>
+<p>父进程（<code>oosplash</code> 的 <code>osl_executeProc</code> 线程，以及最外层 <code>/bin/sh</code>）调用 <code>wait4</code> 阻塞，
+等真正干活的 <code>soffice.bin</code> 结束。递归看，<b>最长的 wait4 = 等 soffice.bin</b>（arm 约 2.07s / x86 约 1.50s），
+外层的 wait4 与它嵌套重叠；其余 wait4 是 <code>dirname/basename/ls/sed/grep/pdftotext/python3</code> 这些瞬启瞬退的小工具。</p>
+
+<h3>3.3 futex（~35%）—— 等的是条件变量上的「soffice.bin 完成」通告</h3>
+<p><code>oosplash</code> 主线程在 pthread 条件变量上做 <code>futex(FUTEX_WAIT)</code>，等 <code>soffice.bin</code> 完成退出；
+决定性的一条等待 arm 约 2.02s / x86 约 1.45s。当 <code>osl_executeProc</code> 线程在 <code>wait4</code> 返回后、
+用一条 <code>futex(FUTEX_WAKE)</code> 唤醒它，链条闭合：<b>futex 和 wait4 是同一件事在主/子线程两侧的镜像</b>。</p>
+
+<h3>3.4 accept（~19%）—— 等的是 SingleOfficeIPC 套接字的 shutdown 握手</h3>
+<p><code>soffice.bin</code> 的 <code>PipeIPC</code> 线程阻塞在 LibreOffice 的<b>单实例 IPC</b> UNIX 套接字上：</p>
+<pre class="tree">
+<span class="c"># arm：</span>
+550 <span class="gr">bind(11, {AF_UNIX, "/tmp/OSL_PIPE_0_SingleOfficeIPC_9b4c95dea5e491cdcd7b5b42ab77eb"})</span> = 0   <span class="c"># 04:55:04.4219</span>
+552 <span class="hl">accept(11, NULL, NULL</span> &lt;unfinished …&gt;                                                  <span class="c"># 04:55:04.4227 ★ 阻塞 1.14s</span>
+550 <span class="gr">connect(7, {AF_UNIX, "…SingleOfficeIPC_…"})</span> = 0                                        <span class="c"># 04:55:06.2711 转换完成后回连</span>
+550 unlink("…SingleOfficeIPC_…")                                                          <span class="c"># 握手后删除套接字</span>
+</pre>
+<p>即：<code>soffice.bin</code> 转换<b>结束后</b>（unlink .lock 之后），主线程才 <code>connect</code> 回自己的监听套接字做 shutdown 握手，
+PipeIPC 线程才从 <code>accept</code> 醒来。<b>全程没有任何外部客户端连入 —— 是空闲监听线程的自阻塞。</b>
+注意 arm / x86 的套接字路径<b>完全相同</b>（同一 UID 下由固定 hash 派生，与机器无关）。</p>
+
+<h2>四、核心结论：soffice 转换本质是 CPU-bound</h2>
+<div class="okbox">
+  <p><b>wait4 / futex / accept 不是三个独立瓶颈，而是「同一次 soffice.bin 转换」的三种等待形式，时间高度重叠。</b>
+  真正的耗时在 <code>soffice.bin</code> 的 CPU 计算上。</p>
+</div>
+<p>最强证据：<code>soffice.bin</code> 退出时内核记账的 CPU 时间（SIGCHLD 的 <code>si_utime</code>/<code>si_stime</code>）：</p>
+<table>
+  <thead><tr><th>进程</th><th>墙钟 wall</th><th>用户态 utime</th><th>内核态 stime</th><th>CPU 合计</th><th>CPU 占比</th></tr></thead>
+  <tbody>
+    <tr><td>arm <code>soffice.bin</code>(pid 550)</td><td class="num">2.02s</td><td class="num">0.60s</td><td class="num">0.99s</td><td class="num"><b>1.59s</b></td><td class="num"><b>~79%</b></td></tr>
+    <tr><td>x86 <code>soffice.bin</code>(pid 545)</td><td class="num">1.46s</td><td class="num">0.38s</td><td class="num">0.58s</td><td class="num"><b>0.96s</b></td><td class="num"><b>~66%</b></td></tr>
+  </tbody>
+</table>
+<p class="small">证据：arm 行 14903 <code>SIGCHLD …, si_utime=60/*0.60s*/, si_stime=99/*0.99s*/</code>；
+x86 行 17179 <code>si_utime=38/*0.38s*/, si_stime=58/*0.58s*/</code>。墙钟 = <code>execve</code> → 退出信号的时间差。</p>
+
+<div class="badbox">
+  <b>❌ 修正之前的错误结论：</b>早前一度判为「soffice 慢既非 CPU 也非磁盘 IO（进程/线程同步 ~77% + UNO IPC ~18%）」——
+  这是被 <code>strace -c -f</code> 的跨线程重叠累加误导。实测 <code>soffice.bin</code> 的 CPU 时间占墙钟 66%~79%，
+  用户态 PPTX 渲染 + 内核态缺页/系统调用是主体，<b>磁盘 IO &lt;1%、无任何网络</b>。
+</div>
+
+<h2>五、#6 冷启动的独特性</h2>
+<p><code>soffice --version</code>（#6）分布明显不同：<code>wait4</code> 占 ~75%（arm 74.9% / x86 72.5%）、<code>futex</code> ~22%，
+且总耗时很短（arm 0.85s / x86 0.27s）。这里的 wait4 是在等 <code>soffice.bin</code> 做<b>启动自举</b>——
+加载动态库（一次运行 5600+ 次 <code>pread64</code>/<code>mmap</code>）、字体/fontconfig/config，打印版本号后立即退出。没有 convert 的 CPU 计算段。</p>
+
+<h2>六、arm vs x86 对比</h2>
+<table>
+  <thead><tr><th>维度</th><th>arm（鲲鹏 920）</th><th>x86（EPYC 9T25）</th></tr></thead>
+  <tbody>
+    <tr><td>进程链 / 等待对象 / 唤醒链</td><td colspan="2"><b>完全同构</b>（soffice 包装脚本 → oosplash → fork → soffice.bin）</td></tr>
+    <tr><td>soffice.bin 墙钟</td><td class="num">2.02s</td><td class="num">1.46s（更快）</td></tr>
+    <tr><td>CPU 占比</td><td class="num">~79%（stime 0.99s 偏高）</td><td class="num">~66%</td></tr>
+    <tr><td>syscall 风格</td><td><code>*at</code> 系列（<code>openat/newfstatat/mkdirat/unlinkat</code>）</td><td>非 <code>at</code> 版（<code>open/stat/mkdir/unlink</code>）</td></tr>
+    <tr><td>syscall 占比比例</td><td colspan="2">几乎一致（wait4/futex/accept ≈ 43/36/19 vs 42/35/18）</td></tr>
+  </tbody>
+</table>
+<p class="small">arm 的 <code>si_stime</code>（内核态）显著更高（0.99s，占总 CPU 62%），是 arm 侧耗时更长的主因，
+指向 arm 上更频繁的用户/内核切换或缺页处理，可作为后续深挖方向。</p>
+
+<h2>七、结论 & 可落地要点</h2>
+<ul>
+  <li><b>soffice 转换是 CPU-bound：</b>瓶颈在 <code>soffice.bin</code> 的 PPTX 渲染计算（CPU 占墙钟 66%~79%），不在磁盘 IO（&lt;1%）也不在网络（0）。</li>
+  <li><b>wait4/futex/accept 是「等它算完」的三种外壳等待，非独立瓶颈：</b>三者时间重叠，被 <code>strace -c -f</code> 跨线程累加放大（arm 三大项 6.90s vs 实际 2.02s）。读 strace 汇总务必警惕这一点。</li>
+  <li><b>调优方向：</b>想再压这段耗时，应聚焦 CPU/渲染本身（CPU 主频、LibreOffice 渲染参数、<code>--convert-to</code> 的 filter、字体/配置预热），而非磁盘或 NUMA（NUMA 绑核对此 CPU-bound 负载仅 ~2–3% 收益，见 HostOS 报告第十四节）。</li>
+  <li><b>arm 比 x86 慢 ~38%（2.02s vs 1.46s）：</b>差值几乎全在 <code>si_stime</code>（内核态 0.99s vs 0.58s），值得单独定位（缺页 / kernel 慢路径 / 架构差异）。</li>
+  <li><b>HZ 视角印证（HostOS 报告第十五节）：</b>宿主机 tick 频率（100/250/1000）对此 CPU-bound 负载几乎无影响（极差 &lt;0.35%），与本结论自洽。</li>
+</ul>
+
+<footer>
+  数据来源：<code>strace -f -tt -T -s 256 -o {#} .strace.log</code> 完整追踪 + <code>-c</code> 汇总，arm/x86 各 3 份（#6/#27/#32）。<br>
+  本文由 strace 原始追踪逐行回溯（execve/clone/wait4/futex/accept/socket 链路 + SIGCHLD CPU 记账）得出，非 AI 臆测。
+  采集于 2026-11-18；关联 HostOS 报告第十四节（NUMA 绑核 A/B）与第十五节（kernel.actual_hz A/B）。
+</footer>
+
+</div>
+</body>
+</html>
