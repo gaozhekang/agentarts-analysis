@@ -57,11 +57,11 @@
 
 <header class="hero">
   <h1>soffice 命令 strace 耗时分析报告</h1>
-  <p class="sub">原生 ppt_replay harness 中 Top3 耗时命令的系统调用级剖析（wait4 / futex / accept 到底在等什么）</p>
+  <p class="sub">原生 ppt_replay harness 中 Top3 耗时命令的系统调用级剖析（wait4 / futex / accept 到底在等什么）+ <b>soffice.bin 本体 per-pid 剥离画像</b></p>
   <p class="meta">
     采集对象：arm <code>10.30.42.77</code>（鲲鹏 920，4×NUMA）&nbsp;·&nbsp; x86 <code>10.30.33.139</code>（AMD EPYC 9T25，2×NUMA）<br>
-    采集方式：<code>strace -f -tt -T -s 256</code>（root，跟随线程/进程，微秒级时间戳 + 单次耗时）<br>
-    采集日期：2026-11-18 &nbsp;·&nbsp; 产物：<code>strace-out/{arm,x86}/{006,027,032}.strace.{log,sum}</code>（完整追踪 0.6–6.3MB/份）
+    采集方式：<code>strace -f -tt -T -s 256</code>（外壳进程树）+ <code>strace -ff</code>（每进程独立追踪文件，按 <code>execve</code> 命中 <code>soffice.bin</code> 剥离本体）<br>
+    采集日期：2026-11-18（外壳）&nbsp;·&nbsp; 2026-11-19（per-pid 剥离）&nbsp;·&nbsp; 产物：<code>strace-out/{arm,x86}/{006,027,032}.strace.{log,sum}</code> + <code>{006,027,032}.soffice_bin.p*.strace.log</code>
   </p>
 </header>
 
@@ -178,19 +178,107 @@ x86 行 17179 <code>si_utime=38/*0.38s*/, si_stime=58/*0.58s*/</code>。墙钟 =
 <p class="small">arm 的 <code>si_stime</code>（内核态）显著更高（0.99s，占总 CPU 62%），是 arm 侧耗时更长的主因，
 指向 arm 上更频繁的用户/内核切换或缺页处理，可作为后续深挖方向。</p>
 
-<h2>七、结论 & 可落地要点</h2>
+<h2>七、soffice.bin 本体 per-pid 剥离画像（直接证据）</h2>
+
+<p>前面的 CPU 占比（66~79%）来自 <code>SIGCHLD</code> 的 <code>si_utime/si_stime</code> 内核记账，属<b>间接证据</b>，
+且墙钟里混入了 <code>oosplash</code> / <code>/bin/sh</code> / <code>tail</code> 等外壳进程。
+2026-11-19 用 <code>strace -ff</code>（每进程/线程独立追踪文件）重新抓取，按 <code>execve</code> 命中
+<code>soffice.bin</code> 把<b>转换本体</b>的 syscall 序列完整剥离出来（x86/arm 各 3 份：
+<code>#6</code> 探测、<code>#27/#32</code> 两次转换），得到直视本体 CPU/IO 构成的直接证据。</p>
+
+<div class="note">
+  <b>剥离方法：</b><code>strace -ff -o trace</code> 会为每个 task 写 <code>trace.PID</code>；
+  从每个 <code>trace.PID</code> 里筛出 <code>execve(.../soffice.bin...)</code> 的那份，即为本体。
+  这一层丢掉了外壳的 <code>wait4/futex/accept</code> 噪音——<b>剥离后三者全部消失</b>，进一步印证它们是外壳层等待、不属于本体计算。
+</div>
+
+<h3>7.1 直接测量：用户态 77~81%，内核态仅 ~20%</h3>
+<table>
+  <thead><tr><th>文件</th><th>墙钟</th><th>内核态 stime</th><th>用户态 utime</th><th>syscall 总数</th></tr></thead>
+  <tbody>
+    <tr><td>x86 #27（转换）</td><td class="num">1.442s</td><td class="num">0.320s（22%）</td><td class="num"><b>1.122s（78%）</b></td><td class="num">12,682</td></tr>
+    <tr><td>x86 #32（转换）</td><td class="num">1.438s</td><td class="num">0.327s（23%）</td><td class="num"><b>1.111s（77%）</b></td><td class="num">12,739</td></tr>
+    <tr><td>arm #27（转换）</td><td class="num">1.337s</td><td class="num">0.269s（20%）</td><td class="num"><b>1.069s（80%）</b></td><td class="num">10,478</td></tr>
+    <tr><td>arm #32（转换）</td><td class="num">1.280s</td><td class="num">0.274s（21%）</td><td class="num"><b>1.006s（79%）</b></td><td class="num">10,495</td></tr>
+    <tr><td>x86 #6（探测）</td><td class="num">0.128s</td><td class="num">0.025s（19%）</td><td class="num">0.103s（81%）</td><td class="num">1,926</td></tr>
+    <tr><td>arm #6（探测）</td><td class="num">0.157s</td><td class="num">0.031s（20%）</td><td class="num">0.126s（80%）</td><td class="num">2,170</td></tr>
+  </tbody>
+</table>
+<p><b>转换本体墙钟 1.28~1.44s，用户态占比 77~81%，内核态仅 ~20%。</b>
+与第四节 SIGCHLD 记账结论一致且更干净——把「CPU-bound」从间接推断升级为直接测量。
+（内核态 <code>stime</code> = strace 每条 <code>&lt;耗时&gt;</code> 之和，用户态 = 墙钟 − 内核态近似，CPU-bound 下调度等待可忽略。）</p>
+
+<div class="okbox">
+  <b>关键修正：本体层面 arm 并不比 x86 慢。</b>
+  之前第四节 SIGCHLD 记账得出「arm 2.02s vs x86 1.46s 慢 38%」，那个墙钟混入了 <code>oosplash</code>/<code>sh</code> 外壳层。
+  剥离本体后 arm <b>1.28~1.34s</b> 与 x86 <b>1.44s</b> 相当、甚至略快（arm 内核态 20% 反而低于 x86 22%）。
+  说明「arm 慢」主要在<b>外壳层的 fork/exec/等待链路</b>，而非 soffice 渲染本身。此为不同次运行的新样本，方向性差异需更多样本确认，但至少否定了「arm 渲染更慢」的假设。
+</div>
+
+<h3>7.2 时间线三阶段：启动自举 → 渲染 → 写 PDF</h3>
+<p>以转换本体（相对 <code>execve</code> 起点）的关键事件时间戳，清晰切成三段：</p>
+<table>
+  <thead><tr><th>事件（相对 execve）</th><th>arm #32</th><th>x86 #32</th></tr></thead>
+  <tbody>
+    <tr><td><code>execve(soffice.bin)</code></td><td class="num">0.000s</td><td class="num">0.000s</td></tr>
+    <tr><td>首次 open 输入 <code>.pptx</code></td><td class="num">+0.512s</td><td class="num">+0.808s</td></tr>
+    <tr><td>首次 open 输出 <code>.pdf</code></td><td class="num">+1.203s</td><td class="num">+1.375s</td></tr>
+    <tr><td>首次 write PDF</td><td class="num">+1.204s</td><td class="num">+1.375s</td></tr>
+    <tr><td>退出</td><td class="num">1.280s</td><td class="num">1.438s</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th>阶段</th><th>arm #32</th><th>x86 #32</th><th>在做什么</th></tr></thead>
+  <tbody>
+    <tr><td><b>① 启动自举</b></td><td class="num">0.51s（40%）</td><td class="num">0.81s（56%）</td><td>加载 234 个 <code>.so</code> + 374 个字体 + fontconfig</td></tr>
+    <tr><td><b>② 渲染转换</b></td><td class="num">0.69s（54%）</td><td class="num">0.57s（40%）</td><td>读 PPTX → 版面/绘图计算 → 建 PDF 结构</td></tr>
+    <tr><td><b>③ 写 PDF 收尾</b></td><td class="num">0.08s（6%）</td><td class="num">0.06s（4%）</td><td>写 192KB PDF + fsync + 退出</td></tr>
+  </tbody>
+</table>
+<p><b>启动自举占墙钟 40~56%，与渲染本身同量级</b>——这是 LibreOffice 每次沙箱都要重付的冷启动成本。
+有趣的交叉：arm 启动自举<b>更快</b>（0.51s vs 0.81s，文件映射 638 vs 960 更少），但渲染<b>更慢</b>（0.69s vs 0.57s）；
+x86 相反。两者最终墙钟接近，差异被互相抵消。</p>
+
+<h3>7.3 openat 文件分类：冷启动成本源 = 字体 374 + 动态库 234</h3>
+<p>转换本体全程 <code>openat</code> 约 1190 次，按路径分类（arm/x86 几乎一致）：</p>
+<table>
+  <thead><tr><th>分类</th><th>次数</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><b>字体文件</b></td><td class="num">374</td><td><code>/usr/share/fonts/**</code> 的 <code>.ttf/.otf/.ttc</code>，fontconfig 全量枚举</td></tr>
+    <tr><td><b>动态库 .so</b></td><td class="num">234</td><td><code>libuno_*.so / lib*.so</code>，运行时 dlopen 加载</td></tr>
+    <tr><td>临时/IPC</td><td class="num">220</td><td><code>/tmp/OSL_PIPE_*</code>、UNIX 套接字 + 即时位于 /tmp 的文件</td></tr>
+    <tr><td>配置/fontconfig</td><td class="num">89</td><td><code>fontconfig/*.conf / *.xml</code></td></tr>
+    <tr><td>LO 配置库</td><td class="num">15</td><td><code>registrymodifications.xcu</code> 等</td></tr>
+    <tr><td>输入 PPTX / 输出 PDF</td><td class="num">各 2</td><td>真正的业务文件，<b>可忽略</b></td></tr>
+  </tbody>
+</table>
+<p><b>374 个字体枚举是启动自举的最大头</b>，印证第四节「线程在等 oosplash 加载字体」的间接观察；
+也直接坐实第 3 步结论：<b>模板快照时 init+envd 未加载业务动态库/字体</b>，所以每次转换都要冷加载 234 个
+<code>.so</code> + 374 个字体。若想压缩启动段，预热方向是：模板固化前 touch 一遍字体目录 + 跑一次
+<code>soffice --version</code> 把 <code>.so</code>/字体页缓存进 host page cache（这会改变「冷启动」口径，需有意为之）。</p>
+
+<h3>7.4 线程与 syscall 风格：41 线程并发 + arm/x86 ABI 差异</h3>
 <ul>
-  <li><b>soffice 转换是 CPU-bound：</b>瓶颈在 <code>soffice.bin</code> 的 PPTX 渲染计算（CPU 占墙钟 66%~79%），不在磁盘 IO（&lt;1%）也不在网络（0）。</li>
-  <li><b>wait4/futex/accept 是「等它算完」的三种外壳等待，非独立瓶颈：</b>三者时间重叠，被 <code>strace -c -f</code> 跨线程累加放大（arm 三大项 6.90s vs 实际 2.02s）。读 strace 汇总务必警惕这一点。</li>
-  <li><b>调优方向：</b>想再压这段耗时，应聚焦 CPU/渲染本身（CPU 主频、LibreOffice 渲染参数、<code>--convert-to</code> 的 filter、字体/配置预热），而非磁盘或 NUMA（NUMA 绑核对此 CPU-bound 负载仅 ~2–3% 收益，见 HostOS 报告第十四节）。</li>
-  <li><b>arm 比 x86 慢 ~38%（2.02s vs 1.46s）：</b>差值几乎全在 <code>si_stime</code>（内核态 0.99s vs 0.58s），值得单独定位（缺页 / kernel 慢路径 / 架构差异）。</li>
+  <li><b>线程数：本体创建 41 个线程</b>（#6 探测为 0——<code>--version</code> 不起渲染线程池）。x86 用 <code>clone</code>×5 + <code>clone3</code>×36，arm 全用 <code>clone</code>×41；glibc 在 x86 上优先走 <code>clone3</code>，纯 ABI 差异，无性能含义。</li>
+  <li><b>mmap 差异：</b>x86 文件映射 960 次 vs arm 638 次，arm 匿名映射 267 vs x86 102——arm 侧匿名内存更多（缺页更频繁），对应 7.2 里「arm 渲染段略慢」。</li>
+  <li><b>syscall 风格：</b>arm 用 <code>*at</code> 封装（<code>faccessat</code>×758 / <code>readlinkat</code>×307），x86 用元调用（<code>access</code>×758 / <code>readlink</code>×307），同一操作、不同 glibc 封装。</li>
+  <li><b>写 PDF 落盘：</b><code>write/pwrite64</code> 写 PDF 合计 <b>196,802 字节（~192KB）</b>，arm 另有 <code>fdatasync</code>×12（0.014~0.017s）显式刷盘；x86 无 fsync。量级远小于渲染段，坐实「磁盘 IO 可忽略」。</li>
+</ul>
+
+<h2>八、结论 & 可落地要点</h2>
+<ul>
+  <li><b>soffice 转换是 CPU-bound：</b>瓶颈在 <code>soffice.bin</code> 的 PPTX 渲染计算。per-pid 直接测量：本体墙钟 1.28~1.44s，用户态占 <b>77~81%</b>、内核态仅 ~20%，不在磁盘 IO（&lt;1%）也不在网络（0）。</li>
+  <li><b>wait4/futex/accept 是「等它算完」的三种外壳等待，非独立瓶颈：</b>三者时间重叠，被 <code>strace -c -f</code> 跨线程累加放大（arm 三大项 6.90s vs 实际 2.02s）。<code>strace -ff</code> 剥离本体后三者全部消失，坐实是外壳层等待。读 strace 汇总务必警惕这一点。</li>
+  <li><b>调优方向：</b>想再压这段耗时，应聚焦 CPU/渲染本身（CPU 主频、LibreOffice 渲染参数、<code>--convert-to</code> 的 filter、字体/配置预热），而非磁盘或 NUMA（NUMA 绑核对此 CPU-bound 负载仅 ~2–3% 收益，见 HostOS 报告第十四节）。启动自举占墙钟 40~56%（234 个 <code>.so</code> + 374 个字体），是比渲染更易攻的成本项。</li>
+  <li><b>本体层面 arm 并不比 x86 慢：</b>剥离外壳后 arm 本体 1.28~1.34s vs x86 1.44s，相当甚至略快。先前「arm 慢 38%（2.02s vs 1.46s）」的差值来自 <code>oosplash</code>/<code>sh</code> 外壳层的 fork/exec/等待链路，而非 soffice 渲染本体。（此为不同次运行的新样本，方向需更多样本确认，但至少否定「arm 渲染更慢」。）</li>
   <li><b>HZ 视角印证（HostOS 报告第十五节）：</b>宿主机 tick 频率（100/250/1000）对此 CPU-bound 负载几乎无影响（极差 &lt;0.35%），与本结论自洽。</li>
 </ul>
 
 <footer>
-  数据来源：<code>strace -f -tt -T -s 256 -o {#} .strace.log</code> 完整追踪 + <code>-c</code> 汇总，arm/x86 各 3 份（#6/#27/#32）。<br>
-  本文由 strace 原始追踪逐行回溯（execve/clone/wait4/futex/accept/socket 链路 + SIGCHLD CPU 记账）得出，非 AI 臆测。
-  采集于 2026-11-18；关联 HostOS 报告第十四节（NUMA 绑核 A/B）与第十五节（kernel.actual_hz A/B）。
+  数据来源：<code>strace -f -tt -T -s 256 -o {#} .strace.log</code> 完整追踪 + <code>-c</code> 汇总（外壳，arm/x86 各 3 份 #6/#27/#32）；
+  <code>strace -ff</code> 每进程追踪 + 按 <code>execve(soffice.bin)</code> 剥离本体（arm/x86 各 3 份 <code>.soffice_bin.p*.strace.log</code>）。<br>
+  本文由 strace 原始追踪逐行回溯（execve/clone/wait4/futex/accept/socket 链路 + SIGCHLD CPU 记账 + per-pid syscall 时序分类）得出，非 AI 臆测。
+  采集于 2026-11-18（外壳）与 2026-11-19（per-pid 剥离）；关联 HostOS 报告第十四节（NUMA 绑核 A/B）与第十五节（kernel.actual_hz A/B）。
 </footer>
 
 </div>

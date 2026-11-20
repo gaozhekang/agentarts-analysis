@@ -71,12 +71,12 @@
 
 <header>
   <h1>华为 Gray 沙箱 · 宿主机(Host OS)优化项分析</h1>
-  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优<br>更新：2026-11-14 晚，第 4 项 tdp_mmu 已完成 A/B 实测（见第六节）；2026-11-16 新增 halt_poll_ns / halt_poll_ns_shrink（第七节）与 C-state 关闭（第八节）A/B 实测；2026-11-18 第 1 项 NUMA 绑核绑内存完成 bound/unbound 紧邻 A/B 实测（见第十四节）</div>
+  <div class="sub">生成日期：2026-11-12 &nbsp;·&nbsp; 对象：x86 ECS 10.30.33.139（AMD EPYC 9T25）+ arm ECS 10.30.33.67（鲲鹏 920）&nbsp;·&nbsp; 视角：沙箱 ppt_replay harness / workload.py 的宿主侧调优<br>更新：2026-11-14 晚，第 4 项 tdp_mmu 已完成 A/B 实测（见第六节）；2026-11-16 新增 halt_poll_ns / halt_poll_ns_shrink（第七节）与 C-state 关闭（第八节）A/B 实测；2026-11-18 第 1 项 NUMA 绑核绑内存完成 bound/unbound 紧邻 A/B 实测（见第十四节）；2026-11-18 晚新增 kernel.actual_hz 三档 A/B 实测（见第十五节）；2026-11-19 第 3 项 nohz_full（不带 isolcpus）与 arm mitigations=off 完成 A/B 实测（结论均为无收益，见第三、四节）；2026-11-19 晚补 arm mitigations off/on 紧邻 A/B（均 bound numa0，off 16.987s vs on 17.130s = −0.83% 无稳定收益）与 guest 内核编译期关 BHB（CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY=n，harness 无差异）实测，并以源码级确认 arm64 spectre_v1/spectre_v2(BHB) 缓解机制（见第四节）</div>
 </header>
 
 <h2>一、一句话结论</h2>
 <p>两台宿主机 CPU 富余（内存空闲 1.4TiB / 1.0TiB）、<code>THP=always</code> 与 <code>mitigations=off</code> 均已到位；<b>真正的短板是「无 NUMA 绑核绑内存 + 无隔离核（<code>isolcpus</code>/<code>nohz_full</code>）+ <code>halt_poll_ns</code> 收缩被关闭」</b>。其中<b> NUMA 绑核绑内存</b>最可能直接消掉此前 arm harness 逐轮 std 高达 3.5~4.3% 的「宿主漂移」。</p>
-<p class="note"><b>性价比排序：</b>① NUMA 绑核绑内存（消方差）&gt; ② <code>halt_poll_ns</code>（提延迟、代价≈0）&gt; ③ <code>tdp_mmu=Y</code>（EPT 缺页）&gt; ④ <code>isolcpus</code>/<code>nohz_full</code>（去 jitter）&gt; ⑤ AVIC（收益可能大但兼容性风险高）。<b>cluster 调度域（CLS）已评估：arm 存在该级、x86 基本无；对 4 vCPU 单流 harness 属二阶微调，低杠杆，不纳入。</b></p>
+<p class="note"><b>性价比排序：</b>① NUMA 绑核绑内存（消方差）&gt; ② <code>halt_poll_ns</code>（提延迟、代价≈0）&gt; ③ <code>tdp_mmu=Y</code>（EPT 缺页）&gt; ④ <code>isolcpus</code>/<code>nohz_full</code>（去 jitter，<b>须同配；2026-11-19 实测单独 nohz_full 反而劣化 ~2%/~7-8%</b>）&gt; ⑤ AVIC（收益可能大但兼容性风险高）。<b>cluster 调度域（CLS）已评估：arm 存在该级、x86 基本无；对 4 vCPU 单流 harness 属二阶微调，低杠杆，不纳入。</b></p>
 
 <h2>二、宿主机实测概况</h2>
 <table>
@@ -120,12 +120,13 @@
 </div>
 
 <div class="item">
-<h3>3. 无 isolcpus / nohz_full（tick 抖动，x86 尤甚） <span class="pill warn">中</span></h3>
+<h3>3. 无 isolcpus / nohz_full（tick 抖动，x86 尤甚） <span class="pill none">已实测·单配劣化</span></h3>
 <p class="kvline"><b>当前值：</b>cmdline <code class="mono">nohz=off</code>（明确关掉动态 tick），无 <code class="mono">isolcpus</code>/<code class="mono">nohz_full</code>/<code class="mono">rcu_nocbs</code>；宿主 <code class="mono">CONFIG_NO_HZ_FULL=y</code> 已编译（仅被 <code class="mono">nohz=off</code> 关掉）。</p>
 <p><b>含义：</b>所有 512/160 个核都按 HZ 被周期 tick 打断，没有为 vCPU 预留「无 tick 隔离核」。x86 宿主 <code class="mono">HZ=1000</code>（1ms tick）、arm <code class="mono">HZ=250</code>（4ms tick），<b>x86 tick 压力是 arm 的 4 倍</b>。</p>
 <p><b>作用：</b>vCPU 跑 guest 时，宿主 tick、RCU 回调、中断会周期性抢占，对短命令密集、fork/exec 密集的负载带来 jitter。</p>
-<p><b>优化方向：</b>划一段专用核做 <code class="mono">isolcpus=... + nohz_full=... + rcu_nocbs=...</code>（去掉 <code class="mono">nohz=off</code>，<b>改 cmdline 即可、不用重编内核</b>），宿主 housekeeping 任务绑到 0-7。</p>
-<p class="kvline"><b>预期/风险：</b>收益中等，但要重构 conductor 的核分配逻辑，工程量大。</p>
+<p><b>优化方向：</b>划一段专用核做 <code class="mono">isolcpus=... + nohz_full=... + rcu_nocbs=...</code>（去掉 <code class="mono">nohz=off</code>，<b>改 cmdline 即可、不用重编内核</b>），宿主 housekeeping 任务绑到 0-7。<b>⚠️ nohz_full 必须与 isolcpus 同配</b>——实测表明单独配 nohz_full 反而劣化（见下）。</p>
+<p class="kvline"><b>实测结论（2026-11-19，bound node0，nohz_full 不带 isolcpus）：</b>arm/x86 分别配 <code class="mono">nohz_full=8-39</code> / <code class="mono">8-127,256-383</code>（去掉 nohz=off）后，CPU-bound harness 反而 <b>+1.9% / +2.6%</b>、memory_s <b>+7.4% / +6.2%</b>（fib/fork/fileio/npm_hot ≈0）；反向 A/B 还原 nohz=off 后回落（x86 harness −2.6%、memory_s −8.8%；arm harness −2.0%）。<b>机理</b>：不带 isolcpus 时，nohz_full 核上仍有 kworker 等杂散任务，tick 反复「停/启」的 churn 比固定周期 tick 更贵。</p>
+<p class="kvline"><b>预期/风险：</b>单独 nohz_full 无收益（已实测劣化）；只有 <code class="mono">isolcpus + nohz_full + rcu_nocbs</code> 全配、并重构 conductor 的核分配逻辑后，才有「去 jitter」收益，工程量大。</p>
 </div>
 
 <div class="item">
@@ -199,7 +200,7 @@
 <table>
   <thead><tr><th>项</th><th>当前状态</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td>mitigations</td><td>x86 <code class="mono">mitigations=off</code> / arm <code class="mono">nospectre_bhb</code></td><td>宿主侧缓解已关，配合 guest 侧 mitigations=off 的 2.69× syscall 收益，一致。</td></tr>
+    <tr><td>mitigations</td><td>x86 <code class="mono">mitigations=off</code> / arm <code class="mono">nospectre_bhb</code></td><td>宿主侧缓解已关，配合 guest 侧 mitigations=off 的 2.69× syscall 收益，一致。2026-11-19 补充实测：arm 再配 <code class="mono">mitigations=off</code> <b>无可测收益</b>——arm 的 spectre_v1（编译期 <code class="mono">__user</code> sanitization）/ spectre_v2（硬件 CSV2）运行时关不掉，仅 spec_store_bypass 变 Not affected；与 x86 全变 Vulnerable 不同。同日紧邻 A/B（均 bound numa0、guest 基线模板、harness n=5 中位数）：off <b>16.987s</b> vs on <b>17.130s</b> = −0.83%，落 run-to-run 漂移带（历史同配置两次运行差 ~2%）且历史方向相反，<b>无稳定收益</b>。自编 guest 内核编译期关 BHB（<code class="mono">CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY=n</code>）实测 harness 17.182/16.849s vs 基线 17.041s（±0.8% 噪声内）同样无差异。源码级确认：arm64 <code class="mono">cpu_show_spectre_v1</code> 硬编码「__user pointer sanitization」、<code class="mono">__uaccess_mask_ptr</code> 无条件编译无 config 可关，spectre_v2 的 BHB 缓解才是该 config 控制对象——即 arm 侧信道缓解为编译期/硬件级，运行时/编译期开关均对 CPU-bound harness 无可测收益。</td></tr>
     <tr><td>cpufreq</td><td>两节点 <code class="mono">performance</code></td><td>已锁最高频，无需再动。</td></tr>
     <tr><td>THP</td><td>两节点 <code class="mono">[always]</code></td><td>guest 8GB 内存已用 2MB 大页映射。</td></tr>
     <tr><td>swappiness</td><td><code class="mono">0</code>（无 swap）</td><td>主机不换页，正确。</td></tr>
@@ -213,7 +214,7 @@
   <li><b>先做 NUMA 绑核绑内存</b>（第 1 项）：<b>已在 arm 77 用纯配置路线（systemd drop-in）落地并验证</b>（详见第 1 项「落地进展」）；收益目标是把 arm/x86 harness 逐轮方差压下来。4 节点轮转的正式方案需 conductor 升级到 v0.2.0 或改源码，当前为 node0 单节点演示。</li>
   <li><b>再调 halt_poll_ns + tdp_mmu</b>（第 2、4 项）：低风险、可在线改，改完用同一套 ppt_replay harness（读 <code>sum_ns</code>）与 npm 热装做 A/B 对照，量化 vmexit/唤醒路径收益。</li>
   <li><b>AVIC（第 5 项）单独灰度</b>：因兼容性风险，先在一台验证节点开 <code class="mono">avic=1</code> 跑稳定性 + 基准，再决定是否推广。</li>
-  <li><b>isolcpus/nohz_full（第 3 项）作为中期改造</b>：与绑核一起做，才能兑现「去 jitter」的完整收益；宿主 <code class="mono">CONFIG_NO_HZ_FULL=y</code> 已编译，改 cmdline 即可。</li>
+  <li><b>isolcpus/nohz_full（第 3 项）作为中期改造</b>：与绑核一起做，才能兑现「去 jitter」的完整收益；宿主 <code class="mono">CONFIG_NO_HZ_FULL=y</code> 已编译，改 cmdline 即可。<b>但必须 <code class="mono">isolcpus + nohz_full(+rcu_nocbs)</code> 同配</b>——2026-11-19 实测单独 nohz_full 反而劣化 harness ~2% / memory_s ~7-8%。</li>
   <li><b>cluster 调度不纳入主路径</b>：已核实 arm <code class="mono">CONFIG_SCHED_CLUSTER=y</code>、x86 <code class="mono">CONFIG_SCHED_CLUSTER_PAIR=m</code>；调度器为 EEVDF，经典 CFS 旋钮已随 6.6 删除（可调 <code class="mono">base_slice_ns</code>/<code class="mono">migration_cost_ns</code> 等），对 4 vCPU 单流 harness 均为低优。</li>
 </ol>
 <p class="note">验证手段复用既有口径：harness 用前端 <code>ppt_replay</code> 的 <code>performance.summary.commands.sum_ns</code>（32 条命令累计耗时）；workload 用 <code>python3 /opt/aries/workload.py</code> 各阶段秒数。宿主侧改动需在节点上操作并注意回滚记录。</p>
@@ -588,8 +589,35 @@
 </ul>
 </div>
 
+<h2>十五、实测验证：kernel.actual_hz（HZ=100/250/1000）三档 A/B（原生 harness，bound node0，2026-11-18 晚）</h2>
+
+<p class="note"><b>目的：</b>量化宿主机 <code class="mono">kernel.actual_hz</code>（华为 HCE 内核 sysctl，写 0=用编译默认 CONFIG_HZ，写 100/250/1000=实时改 tick 频率）对<b>原生 ppt_replay harness</b>（32 命令回放，读 <code>sum_ns</code>）的影响。为降低跨 NUMA 抖动，全程 <b>bound node0</b>（arm <code class="mono">8-39</code> / x86 <code class="mono">8-127,256-383</code> + <code class="mono">NUMAPolicy=bind</code> + <code class="mono">NUMAMask=0</code>），n=5 取中位数，测后解绑回 unbound、<code class="mono">actual_hz</code> 还原 0。</p>
+
+<p class="note"><b>前提修正（重要）：</b>宿主机默认 HZ 与你此前口述相反——实测 <b>arm <code class="mono">CONFIG_HZ=250</code>、x86 <code class="mono">CONFIG_HZ=1000</code></b>（<code class="mono">actual_hz=0</code> 的总 jiffies 增速与之一致）。<code class="mono">getconf CLK_TCK=100</code> 是 USER_HZ 固定值，易误判。机制已验证：写 100/250/1000 后总 jiffies 增速严格按 1:2.5:10 线性变化，确认是实时生效的 tick 开关。</p>
+
+<h3>15.1 harness 结果（命令累计耗时，越低越好）</h3>
+<table>
+  <thead><tr><th>架构</th><th>默认 HZ</th><th>HZ=100</th><th>HZ=250</th><th>HZ=1000</th><th>极差</th></tr></thead>
+  <tbody>
+    <tr><td>arm</td><td>250</td><td>17.417s</td><td>17.394s</td><td>17.390s</td><td>0.16%</td></tr>
+    <tr><td>x86</td><td>1000</td><td>11.672s</td><td>11.690s</td><td>11.713s</td><td>0.35%</td></tr>
+  </tbody>
+</table>
+<p class="kvline">arm 样本：100→17.301/17.406/17.417/17.537/17.606、250→17.141/17.290/17.394/17.470/17.558、1000→17.212/17.294/17.390/17.566/17.647。x86 样本：100→11.628/11.655/11.672/11.675/11.676、250→11.611/11.666/11.690/11.735/11.770、1000→11.612/11.641/11.713/11.742/11.768。</p>
+
+<h3>15.2 结论</h3>
+<div class="okbox">
+<p><b>宿主机 HZ（100/250/1000）对原生 ppt_replay harness 无显著影响。</b></p>
+<ul>
+  <li><b>数据：</b>三档中位数极差 arm 0.16% / x86 0.35%，全在测量噪声带内（此前同配置时段漂移可达 −3.3%）。</li>
+  <li><b>与 strace 结论自洽：</b>harness 瓶颈是 soffice.bin 的 <b>CPU-bound 转换</b>（约 80% CPU、磁盘 IO 可忽略、无网络），tick 频率不改变 CPU 计算吞吐，故 HZ 对纯 CPU 负载几乎无影响。</li>
+  <li><b>唯一微弱趋势：</b>x86 呈单调「低 HZ 略快」（100=11.672 < 250=11.690 < 1000=11.713，−0.35%），方向符合「低 HZ=少定时器中断=CPU-bound 略快」，但幅度在噪声内，<b>不构成可落地收益</b>。</li>
+  <li><b>落地：</b>维持默认 CONFIG_HZ（arm 250 / x86 1000）即可，无需调 <code class="mono">actual_hz</code>；测后两节点已解绑 unbound、<code class="mono">actual_hz=0</code>。</li>
+</ul>
+</div>
+
 <footer style="margin-top:48px; border-top:1px solid #334155; padding-top:16px; color:#64748b; font-size:12.5px;">
-  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12；tdp_mmu A/B 实测于 2026-11-14 晚；halt_poll_ns / halt_poll_ns_shrink / C-state（含 max_cstate=1 反向 A/B）/ kvm_amd.avic / mTHP / twed_enable / audit=0 A/B 实测于 2026-11-16（x86 + arm）；mTHP 反向 A/B 实测于 2026-11-17 上午（x86）；geekbench+sysbench 虚拟化开销（host vs guest）实测于 2026-11-17（arm，第十三节）；NUMA 绑核绑内存 bound/unbound A/B（原生 harness，官方方式）实测于 2026-11-18（x86 + arm，第十四节）。
+  数据来源：<code>cat /proc/cmdline</code>、<code>lscpu</code>、<code>numactl --hardware</code>、<code>/sys/module/kvm{,_intel,_amd}/parameters/*</code>、<code>sysctl -a</code>、<code>/etc/sysctl.d/*</code>、<code>/etc/conductor/conductor.yaml</code>、<code>ps -ef | grep cloud-hypervisor</code>、<code>/sys/kernel/debug/sched/domains/*</code>、<code>/boot/config-*</code> —— 采集于 2026-11-12；tdp_mmu A/B 实测于 2026-11-14 晚；halt_poll_ns / halt_poll_ns_shrink / C-state（含 max_cstate=1 反向 A/B）/ kvm_amd.avic / mTHP / twed_enable / audit=0 A/B 实测于 2026-11-16（x86 + arm）；mTHP 反向 A/B 实测于 2026-11-17 上午（x86）；geekbench+sysbench 虚拟化开销（host vs guest）实测于 2026-11-17（arm，第十三节）；NUMA 绑核绑内存 bound/unbound A/B（原生 harness，官方方式）实测于 2026-11-18（x86 + arm，第十四节）；kernel.actual_hz（HZ=100/250/1000）三档 A/B（原生 harness，bound node0）实测于 2026-11-18 晚（x86 + arm，第十五节）；arm mitigations=off 与 nohz_full（arm/x86，不带 isolcpus）A/B 实测于 2026-11-19（bound node0 + guest 镜像 HZ=100，原生 harness n=5 中位数 + workload n=3 中位数，含 nohz_full 还原反向 A/B）；arm mitigations off/on 紧邻 A/B（均 bound numa0、guest 基线模板，off 16.987s vs on 17.130s）与 guest 内核编译期关 BHB（CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY=n，harness 17.182/16.849s vs 基线 17.041s）实测、并抓 soffice.bin 子进程 strace（-ff 每进程剥离，坐实 CPU-bound ~78-80%）于 2026-11-19 晚（源码取证：arch/arm64/kernel/proton-pack.c cpu_show_spectre_v1 硬编码 + arch/arm64/include/asm/uaccess.h __uaccess_mask_ptr 无条件编译 + arch/arm64/Kconfig CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY 控制 spectre_v2 BHB）。
 </footer>
 
 </div>
