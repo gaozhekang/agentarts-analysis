@@ -137,11 +137,10 @@ x86：<code>545 04:54:35.240305 execve(…soffice.bin…)</code>。两侧 <code>
 PipeIPC 线程才从 <code>accept</code> 醒来。<b>全程没有任何外部客户端连入 —— 是空闲监听线程的自阻塞。</b>
 注意 arm / x86 的套接字路径<b>完全相同</b>（同一 UID 下由固定 hash 派生，与机器无关）。</p>
 
-<h2>四、核心结论：soffice 转换本质是 CPU-bound</h2>
+<h2>四、核心结论：soffice 转换是缺页密集的 CPU 负载</h2>
 <div class="okbox">
   <p><b>wait4 / futex / accept 不是三个独立瓶颈，而是「同一次 soffice.bin 转换」的三种等待形式，时间高度重叠。</b>
-  真正的耗时在 <code>soffice.bin</code> 的 CPU 计算上——更精确地说，内核态 <code>si_stime</code> 是用户态 <code>si_utime</code> 的 ~1.6 倍
-  （arm 0.99s vs 0.60s / x86 0.58s vs 0.38s），其中大头是<b>缺页异常（page fault）</b>，见 7.5 节。</p>
+  真正的耗时在 <code>soffice.bin</code> 的 CPU 计算上，其中内核态（缺页处理）占大头，见 7.5 节精确画像。</p>
 </div>
 <p>最强证据：<code>soffice.bin</code> 退出时内核记账的 CPU 时间（SIGCHLD 的 <code>si_utime</code>/<code>si_stime</code>）：</p>
 <table>
@@ -152,11 +151,14 @@ PipeIPC 线程才从 <code>accept</code> 醒来。<b>全程没有任何外部客
   </tbody>
 </table>
 <p class="small">证据：arm 行 14903 <code>SIGCHLD …, si_utime=60/*0.60s*/, si_stime=99/*0.99s*/</code>；
-x86 行 17179 <code>si_utime=38/*0.38s*/, si_stime=58/*0.58s*/</code>。墙钟 = <code>execve</code> → 退出信号的时间差。</p>
+x86 行 17179 <code>si_utime=38/*0.38s*/, si_stime=58/*0.58s*/</code>。墙钟 = <code>execve</code> → 退出信号的时间差。
+<b>注意：<code>si_utime/si_stime</code> 只记调用 <code>exit</code> 的那一个线程（主线程），不是全 41 线程之和</b>——
+进程级（/proc 全线程累加，7.5 节）x86 实为 utime 1.14s / stime 1.35s，是本表主线程值的 ~2.3~3 倍。</p>
 
 <div class="badbox">
   <b>❌ 修正之前的错误结论：</b>早前一度判为「soffice 慢既非 CPU 也非磁盘 IO（进程/线程同步 ~77% + UNO IPC ~18%）」——
-  这是被 <code>strace -c -f</code> 的跨线程重叠累加误导。实测 <code>soffice.bin</code> 的 CPU 时间占墙钟 66%~79%，
+  这是被 <code>strace -c -f</code> 的跨线程重叠累加误导。实测 <code>soffice.bin</code> 的 CPU 时间占墙钟 66%~79%
+  （主线程口径；进程级 /proc 累加更高，见 7.5 节），
   用户态 PPTX 渲染 + 内核态缺页/系统调用是主体，<b>磁盘 IO &lt;1%、无任何网络</b>。
 </div>
 
@@ -176,8 +178,9 @@ x86 行 17179 <code>si_utime=38/*0.38s*/, si_stime=58/*0.58s*/</code>。墙钟 =
     <tr><td>syscall 占比比例</td><td colspan="2">几乎一致（wait4/futex/accept ≈ 43/36/19 vs 42/35/18）</td></tr>
   </tbody>
 </table>
-<p class="small">arm 的 <code>si_stime</code>（内核态）显著更高（0.99s，占总 CPU 62%），是 arm 侧耗时更长的主因，
-指向 arm 上更频繁的用户/内核切换或缺页处理，可作为后续深挖方向。</p>
+<p class="small">arm 的 <code>si_stime</code>（内核态）显著更高（0.99s，占总 CPU 62%）是 arm 侧耗时更长的主因。
+但这是主线程口径——7.5 节进程级精确测量显示 arm 缺页行为<b>波动极大</b>（stime 0.30s vs 3.12s、minflt 13.7万 vs 26.2万），
+而 x86 两次极稳，故 arm 的准确结论须更多样本。</p>
 
 <h2>七、soffice.bin 本体 per-pid 剥离画像（直接证据）</h2>
 
@@ -209,7 +212,7 @@ x86 行 17179 <code>si_utime=38/*0.38s*/, si_stime=58/*0.58s*/</code>。墙钟 =
   <b>⚠️ 这里的「其余（墙钟 − syscall）」不是纯用户态，切勿读成「用户态 CPU」。</b>
   <code>strace -T</code> 只累加<b>系统调用</b>的耗时；而缺页异常（page fault）不是 syscall、strace 不追踪。
   它发生在用户态代码访问未加载内存时，被算进了「墙钟 − syscall」这个差值里——但它本质是<b>内核态</b>工作。
-  真正的用户态/内核态拆分要用内核记账 <code>si_utime/si_stime</code>，见 7.5 节。
+  真正的用户态/内核态拆分要用 <code>/proc</code> 全线程累加的 <code>utime/stime</code>（进程级），见 7.5 节精确画像。
 </div>
 <p>转换本体墙钟 1.28~1.44s，<b>strace 可见的 syscall 耗时仅 20~23%</b>；剩下 77~81% 是「用户态指令 + 缺页异常 + 调度等待」的混合，
 <b>不能</b>等同于用户态 CPU 时间。</p>
@@ -271,44 +274,68 @@ x86 相反。两者最终墙钟接近，差异被互相抵消。</p>
   <li><b>写 PDF 落盘：</b><code>write/pwrite64</code> 写 PDF 合计 <b>196,802 字节（~192KB）</b>，arm 另有 <code>fdatasync</code>×12（0.014~0.017s）显式刷盘；x86 无 fsync。量级远小于渲染段，坐实「磁盘 IO 可忽略」。</li>
 </ul>
 
-<h3>7.5 缺页异常（page fault）：内核态的真大头，strace 看不到</h3>
-<p>把 strace 的 syscall 耗时与内核自己的 CPU 记账（第四节 SIGCHLD 的 <code>si_stime</code>）交叉对比，
-即可分离出 strace 看不见的缺页异常开销。x86 两组数据墙钟恰好接近（1.46s vs 1.44s），可直接相减：</p>
+<h3>7.5 缺页异常（page fault）：精确次数/时长（/proc 全线程累加，非推算）</h3>
+<p>2026-11-20 新增 <code>pf_probe.py</code>：在转换命令运行时轮询 <code>/proc</code> 定位 <code>soffice.bin</code>，
+<b>遍历其全部 41 个线程</b>累加 <code>minflt/majflt</code>（进程级精确次数）与 <code>utime/stime</code>（进程级 CPU 时长）。
+这是因为 <code>oosplash</code> 的 <code>wait4</code> rusage 参数为 <code>NULL</code>、<code>strace -v</code> 也拿不到
+<code>ru_minflt</code>，而 SIGCHLD 的 <code>si_utime/si_stime</code> 只记录主线程——必须直接读 /proc 才能得到进程级精确值。</p>
 <table>
-  <thead><tr><th>内核态构成（x86）</th><th>时间</th><th>占墙钟</th><th>占内核态</th></tr></thead>
+  <thead><tr><th>文件</th><th>minflt（次）</th><th>majflt（次）</th><th>进程级 utime</th><th>进程级 stime（含 fault）</th><th>主线程 syscall 耗时</th></tr></thead>
   <tbody>
-    <tr><td>真·内核态合计 <code>si_stime</code>（SIGCHLD 记账）</td><td class="num">0.58s</td><td class="num">40%</td><td class="num">100%</td></tr>
-    <tr><td>　└ syscall 耗时（strace -T 可见）</td><td class="num">0.32s</td><td class="num">22%</td><td class="num">~55%</td></tr>
-    <tr><td>　└ <b>缺页异常 + 中断/调度（strace 不可见）</b></td><td class="num"><b>≈0.26s</b></td><td class="num"><b>18%</b></td><td class="num"><b>~45%</b></td></tr>
+    <tr><td>x86 #27（转换）</td><td class="num">948,084</td><td class="num">0</td><td class="num">1.14s</td><td class="num">1.35s</td><td class="num">0.320s</td></tr>
+    <tr><td>x86 #32（转换）</td><td class="num">949,668</td><td class="num">0</td><td class="num">1.26s</td><td class="num">1.23s</td><td class="num">0.330s</td></tr>
+    <tr><td>arm #27（转换）</td><td class="num">136,717</td><td class="num">0</td><td class="num">1.80s</td><td class="num">0.30s</td><td class="num">0.269s</td></tr>
+    <tr><td>arm #32（转换）</td><td class="num">261,678</td><td class="num">0</td><td class="num">3.30s</td><td class="num">3.12s</td><td class="num">0.291s</td></tr>
+    <tr><td>x86 #6（探测）</td><td class="num">5,899</td><td class="num">0</td><td class="num">0.02s</td><td class="num">0.00s</td><td class="num">0.025s</td></tr>
+    <tr><td>arm #6（探测）</td><td class="num">5,745</td><td class="num">0</td><td class="num">0.05s</td><td class="num">0.02s</td><td class="num">0.031s</td></tr>
   </tbody>
 </table>
-<p>arm 上这个占比更高：<code>si_stime</code> = 0.99s，而 syscall 仅 ~0.27s，缺页异常等约 <b>0.7s</b>、占内核态 <b>~70%</b>
-（注：arm 两组为不同运行、墙钟 2.02s vs 1.34s 差异大，此处是量级参考；x86 为可靠对比）。</p>
 <div class="okbox">
-  <b>page fault 完全归类在内核态（<code>si_stime</code>），与用户态（<code>si_utime</code>）无关。</b>
-  缺页在内核 <code>do_page_fault → handle_mm_fault</code> 路径里完成（分配物理页、从 page cache 读入、填页表），
-  进程这段时间运行在内核态。因此之前 7.1 的「其余 77~81%」里，有相当一部分其实是内核态的缺页处理。
+  <b>结论一：majflt = 0，转换全程零磁盘 page-in。</b>
+  两架构、三组命令的 <code>majflt</code> 全部为 0 —— soffice 转换过程中<b>没有任何一次缺页等待磁盘</b>，
+  所有缺页都是 minor fault（要么映射已在 page cache 的 .so/字体页面，要么 zero-fill 新匿名页）。
+  这坐实了「磁盘 IO 可忽略」：盘是 <code>read/pread64</code> 提前读完的，缺页只是建页表，不碰盘。
 </div>
-<p><b>为什么缺页这么多：</b>冷启动要按需加载 234 个 <code>.so</code> + 374 个字体 + 渲染数据结构。
-<code>mmap</code> 只建立 VMA 映射（syscall 很快），真正的物理页是在<b>之后首次访问该地址时</b>以缺页方式逐页加载的——
-这正是 7.2 里「启动自举占 40~56%」的时间去向：不是跑 CPU，而是<b>填页表 + 从页缓存读 .so/字体</b>。</p>
-<p class="small">佐证：arm 匿名映射 267 次 vs x86 102 次（7.4 节），arm 侧匿名内存更多 → 缺页更频繁 → 对应 arm 内核态占比更高；
-这与 arm 匿名映射/缺页路径差异一致。精确的缺页次数/时长可用 <code>perf stat -e page-faults,major-faults,minor-faults</code> 在下一次建沙箱时直接数出。</p>
+<p><b>page fault 时长（精确）：</b>既然 majflt=0，所有缺页都是纯 CPU 工作（页表 walk + PTE 填充 + TLB 维护），
+无 IO 等待。故内核态 <code>stime</code> 基本就是「自身少量 syscall + 缺页处理」之和：
+主线程 syscall 仅 ~0.32s（x86），其余 40 线程主要跑 futex（睡眠不计入 stime），
+故 <b>x86 的缺页处理 CPU 时间 ≈ 1.0s</b>（1.35s − ~0.35s），
+单次 minor fault 平均 ≈ 1.35s / 94.8万 ≈ <b>1.4µs/次</b>（x86 #32 亦为 1.3µs），
+恰落在 minor fault 典型量级 1~2µs 内。x86 两次转换数据几乎完全一致（minflt 94.8万 vs 95.0万、stime 1.35s vs 1.23s），值可信。</p>
+<div class="warn">
+  <b>两个修正（推翻之前的交叉推算）：</b>
+  <ol>
+    <li>之前推算「缺页 0.26s 占内核态 45%」用的是<b>主线程</b> <code>si_stime</code>(0.58s) − 主线程 syscall(0.32s)，
+    严重低估。精确的进程级测出 <b>缺页 ≈ 1.0s，是之前主线程推算的 ~4 倍</b>——soffice 是真实多线程，
+    其余 40 个线程的缺页被主线程口径漏掉了。</li>
+    <li>之前「arm 匿名映射更多(267 vs 102)→ arm 缺页更频繁」的预测方向<b>错误</b>：
+    实测 <b>x86 minflt ≈ 95万，是 arm（13.7万~26万）的 3.6~6.9 倍</b>。可能因 arm64 用更大 base page（64KB，待验证
+    <code>getconf PAGESIZE</code>）或 guest THP/工作集差异，需下一轮确认。</li>
+  </ol>
+</div>
+<p><b>arm 波动大（需更多样本）：</b>arm #27→#32 的 minflt 差 ~2x（13.7万 vs 26.2万）、stime 差 ~10x（0.30s vs 3.12s）；
+其中 #32 单次 minor fault 达 11.9µs（明显偏离 1~2µs 常态，疑似混入非 fault 内核活动或该次运行受节点负载干扰）。
+相较之下 x86 两次极稳。arm 的精确结论须等更多样本。</p>
+<p><b>为什么缺页上百万次：</b>冷启动要按需加载 234 个 <code>.so</code> + 374 个字体 + 渲染数据结构。
+<code>mmap</code> 只建立 VMA 映射（syscall 很快），真正的物理页是在<b>之后首次访问时</b>以缺页逐页建立映射——
+x86 上这段进程级 stime ~1.35s 的时间去向不是跑业务，而是<b>给 .so/字体页面填页表</b>。这正是「模板快照只固化到
+init+envd、不预热业务 .so/字体」的直接代价。</p>
 
 <h2>八、结论 & 可落地要点</h2>
 <ul>
-  <li><b>soffice 转换是「冷启动 + 缺页密集」型 CPU 负载：</b>per-pid 直接测量本体墙钟 1.28~1.44s。真·纯用户态 CPU（<code>si_utime</code>）仅 ~26~30%，内核态（<code>si_stime</code>）~40%——其中 <b>page fault 约占内核态一半（x86 ~45%、arm ~70%）</b>，比 syscall 本身更贵。不在磁盘 IO（&lt;1%）也不在网络（0）。</li>
+  <li><b>soffice 转换是「冷启动 + 缺页密集」型负载：</b>per-pid 直接测量本体墙钟 1.28~1.44s。进程级精确测量（/proc 全线程累加）x86 为 utime 1.14s / stime 1.35s（≈2.6 核并行），<b>majflt=0 全程零磁盘 page-in</b>、minor fault ≈95万次，缺页处理 CPU ≈1.0s（~1.4µs/次）是内核态大头，比 syscall 本身（主线程 0.32s）更贵。磁盘 IO &lt;1%、无网络。</li>
   <li><b>wait4/futex/accept 是「等它算完」的三种外壳等待，非独立瓶颈：</b>三者时间重叠，被 <code>strace -c -f</code> 跨线程累加放大（arm 三大项 6.90s vs 实际 2.02s）。<code>strace -ff</code> 剥离本体后三者全部消失，坐实是外壳层等待。读 strace 汇总务必警惕这一点。</li>
-  <li><b>调优方向：</b>想再压这段耗时，应优先攻<b>冷启动缺页</b>（模板固化前预热 .so/字体到 host page cache，消除 234 个 .so + 374 字体的逐页缺页加载），其次才是 CPU 渲染（CPU 主频、LibreOffice 渲染参数、<code>--convert-to</code> 的 filter），而非磁盘或 NUMA（NUMA 绑核对此负载仅 ~2–3% 收益，见 HostOS 报告第十四节）。启动自举占墙钟 40~56%，是比渲染更易攻的成本项。</li>
+  <li><b>调优方向：</b>缺页成本并非磁盘 IO（majflt=0，页面已在 cache），而是<b>逐页填页表的纯 CPU 开销</b>（~95万 minor fault × 1.4µs ≈ 1.0s）。想压这段，杠杆排序：①<b>大页</b>（2MB THP 覆盖匿名渲染缓冲，arm 若换 64KB base page 可把 file-backed 缺页降 ~16 倍）②<b>模板 build 阶段预 fault</b>（<code>MAP_POPULATE</code>/<code>mlock</code> 把 95 万次缺页从 job 运行期挪到快照固化期，不消除但隐藏）③精简 .so/字体（234 个库 + 374 字体是缺页来源）。CPU 渲染（主频/参数/filter）次之，磁盘与 NUMA（收益 ~2–3%）再次。</li>
   <li><b>本体层面 arm 并不比 x86 慢：</b>剥离外壳后 arm 本体 1.28~1.34s vs x86 1.44s，相当甚至略快。先前「arm 慢 38%（2.02s vs 1.46s）」的差值来自 <code>oosplash</code>/<code>sh</code> 外壳层的 fork/exec/等待链路，而非 soffice 渲染本体。（此为不同次运行的新样本，方向需更多样本确认，但至少否定「arm 渲染更慢」。）</li>
   <li><b>HZ 视角印证（HostOS 报告第十五节）：</b>宿主机 tick 频率（100/250/1000）对此 CPU/缺页密集负载几乎无影响（极差 &lt;0.35%），与本结论自洽。</li>
 </ul>
 
 <footer>
   数据来源：<code>strace -f -tt -T -s 256 -o {#} .strace.log</code> 完整追踪 + <code>-c</code> 汇总（外壳，arm/x86 各 3 份 #6/#27/#32）；
-  <code>strace -ff</code> 每进程追踪 + 按 <code>execve(soffice.bin)</code> 剥离本体（arm/x86 各 3 份 <code>.soffice_bin.p*.strace.log</code>）。<br>
-  本文由 strace 原始追踪逐行回溯（execve/clone/wait4/futex/accept/socket 链路 + SIGCHLD CPU 记账 + per-pid syscall 时序分类）得出，非 AI 臆测。
-  采集于 2026-11-18（外壳）与 2026-11-19（per-pid 剥离）；关联 HostOS 报告第十四节（NUMA 绑核 A/B）与第十五节（kernel.actual_hz A/B）。
+  <code>strace -ff</code> 每进程追踪 + 按 <code>execve(soffice.bin)</code> 剥离本体（arm/x86 各 3 份 <code>.soffice_bin.p*.strace.log</code>）；
+  page fault 精确数据来自 <code>pf_probe.py</code> 轮询 <code>/proc</code> 全 41 线程累加（arm/x86 各 3 份 <code>.pf.json</code>，2026-11-20）。<br>
+  本文由 strace 原始追踪逐行回溯（execve/clone/wait4/futex/accept/socket 链路 + SIGCHLD CPU 记账 + per-pid syscall 时序分类 + /proc page-fault 累加）得出，非 AI 臆测。
+  采集于 2026-11-18（外壳）、2026-11-19（per-pid 剥离）与 2026-11-20（page fault 精确测量）；关联 HostOS 报告第十四节（NUMA 绑核 A/B）与第十五节（kernel.actual_hz A/B）。
 </footer>
 
 </div>
